@@ -1,7 +1,8 @@
 # Living Wallpaper
 
 An ASCII-mosaic aquarium on the macOS desktop. Hammerhead and leopard shark families swim
-behind the desktop icons; "Evil is whatever distracts." stays still in the middle.
+behind the desktop icons and feast on "Evil is whatever distracts.": the words are fine dots that
+scatter where a shark swims through, feed it a little, and settle back into place.
 
 - **Hover** over the desktop: adult sharks come and circle the cursor.
 - **Click open water**: food pellets sink; hungry sharks (and babies) chase them.

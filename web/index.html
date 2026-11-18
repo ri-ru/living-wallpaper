@@ -90,17 +90,62 @@ function glyphFor(level, cell, t) {
   return GI[set[(r * 97 + Math.floor(t * 0.0006 + r * 5)) % set.length | 0]];
 }
 
-// ---------- the words: constant, crisp, drawn once ----------
+// ---------- the words: fine dots; sharks feast through them, then the letters settle back ----------
+const TS = 2;                                                   // text dot pitch, css px
+let dots = [], textBox = { x0: 0, y0: 0, x1: 0, y1: 0 }, textDirty = true, wasMoving = true;
 function drawWords() {
-  const g = txCtx, fs = Math.round(Math.min(W * 0.085, 150) * 0.7);
-  g.clearRect(0, 0, W, H);
+  const off = document.createElement('canvas'), g = off.getContext('2d', { willReadFrequently: true });
+  off.width = Math.round(W * DPR); off.height = Math.round(H * DPR); g.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const fs = Math.round(Math.min(W * 0.085, 150) * 0.7);
   g.font = `400 ${fs}px "Iowan Old Style", "Hoefler Text", Georgia, serif`;
   const lines = []; let cur = '';
   for (const w of QUOTE.split(' ')) { const t = cur ? cur + ' ' + w : w; if (g.measureText(t).width > W * 0.7 && cur) { lines.push(cur); cur = w; } else cur = t; }
   lines.push(cur);
   const lh = fs * 1.15, top = H * 0.46 - (lines.length - 1) * lh / 2, maxw = Math.max(...lines.map(l => g.measureText(l).width)), left = (W - maxw) / 2;
-  g.fillStyle = '#ececec'; g.textBaseline = 'middle';
+  g.fillStyle = '#000'; g.textBaseline = 'middle';
   lines.forEach((l, i) => g.fillText(l, left, top + i * lh));
+  const d = g.getImageData(0, 0, off.width, off.height).data;
+  dots = [];
+  for (let y = 0; y < H; y += TS) for (let x = 0; x < W; x += TS) {
+    const k = (Math.round((y + TS / 2) * DPR) * off.width + Math.round((x + TS / 2) * DPR)) * 4;
+    if (d[k + 3] > 110) dots.push({ hx: x, hy: y, x, y, vx: 0, vy: 0, r: Math.random() });
+  }
+  textBox = { x0: left - 40, x1: left + maxw + 40, y0: top - fs, y1: top + (lines.length - 1) * lh + fs };
+  textDirty = true;
+}
+// Push dots away from (x, y); returns how many were hit, so a shark can count what it ate.
+function kick(x, y, radius, power) {
+  if (x + radius < textBox.x0 || x - radius > textBox.x1 || y + radius < textBox.y0 - 60 || y - radius > textBox.y1 + 60) return 0;
+  const r2 = radius * radius; let hit = 0;
+  for (const p of dots) {
+    const dx = p.x - x, dy = p.y - y, d2 = dx * dx + dy * dy;
+    if (d2 < r2) { hit++; const d = Math.sqrt(d2) || 1, f = (1 - d / radius) * power; p.vx += dx / d * f + (Math.random() - .5) * f * 0.4; p.vy += dy / d * f + (Math.random() - .5) * f * 0.4; }
+  }
+  return hit;
+}
+function updateDots(dt) {
+  for (const sh of sharks) {                                    // living sharks plough through and feast on the words
+    if (sh.dead) continue;
+    let ate = 0;
+    for (let i = 0; i < sh.sp.length; i += 3) { const p = sh.sp[i]; ate += kick(p.x, p.y, width(sh.kind, p.u) * sh.len * 1.6 + 8, 26 * sh.depth); }
+    if (ate) sh.full = Math.min(1, sh.full + ate * 0.000004);
+  }
+  let moving = false;
+  for (const p of dots) {
+    const ox = p.hx - p.x, oy = p.hy - p.y;
+    if (ox * ox + oy * oy < 0.02 && p.vx * p.vx + p.vy * p.vy < 0.05) { p.x = p.hx; p.y = p.hy; p.vx = p.vy = 0; continue; }
+    moving = true;
+    const k = 9 * (0.6 + p.r), damp = Math.pow(0.02, dt);
+    p.vx += ox * k * dt; p.vy += oy * k * dt; p.vx *= damp; p.vy *= damp; p.x += p.vx * dt; p.y += p.vy * dt;
+  }
+  textDirty = textDirty || moving || wasMoving;                 // one last redraw after the dots settle
+  wasMoving = moving;
+}
+function paintWords() {
+  if (!textDirty) return;
+  textDirty = false;
+  txCtx.clearRect(0, 0, W, H); txCtx.fillStyle = '#ececec';
+  for (const p of dots) txCtx.fillRect(p.x, p.y, TS, TS);
 }
 
 // ---------- families, names, events (stored by the host in SQLite) ----------
@@ -399,6 +444,7 @@ function frame(now) {
   }
   alive().forEach((sh, i) => steer(sh, dt, now, i));
   for (const sh of sharks) sh.sp = spine(sh);
+  updateDots(dt);
   if (now > nextBreed) { breed(); nextBreed = now + 20000; save(); }
   if (now > nextCensus) { newcomers(); nextCensus = now + 60000; }
 
@@ -481,6 +527,7 @@ function frame(now) {
     ctx.fillText(l.line, 28, H - 44 - (recent.length - 1 - i) * 15);
   });
   ctx.globalAlpha = 1;
+  paintWords();
 }
 requestAnimationFrame(frame);
 })();
