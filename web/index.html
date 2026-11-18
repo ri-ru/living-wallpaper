@@ -20,35 +20,39 @@ addEventListener('error', e => window.__errs.push(e.message + ' @' + e.lineno));
 const P = new URLSearchParams(location.search);
 const QUOTE = ((window.QUOTES && window.QUOTES[0]) || { text: 'Evil is whatever distracts.' }).text;
 const S = +P.get('cell') || 10;            // shark / aquarium cell size, css px
-const TS = 2;                              // text dot pitch, css px
 const FPS = +P.get('fps') || 15;           // measured 2026-11-19 on this Mac: ~32% of one core at 15 fps, ~42% at 20
 const MAX_SHARKS = 24;                     // my guess, not measured: GPU cost grows with shark area; raise it and re-measure
-const GROW_SECONDS = 15 * 60;              // a baby reaches adult size in ~15 minutes
+const GROW_SECONDS = 15 * 60;              // design choice: a baby reaches adult size in ~15 minutes
+const LIFE_HOURS = [6, 12];                // design choice: each shark lives 6-12 hours of real time
+const MIN_ALIVE = 3;                       // design choice: below this, a new family drifts in
+const TIME_SCALE = +P.get('timescale') || 1;   // tests speed up ageing
 const host = window.webkit && window.webkit.messageHandlers;
+const wall = () => Date.now() * TIME_SCALE;
 
-// ---------- canvas & grid ----------
+// ---------- canvases: slow background, main, and the words ----------
 const cv = document.getElementById('c'), mainCtx = cv.getContext('2d');
 const bgv = document.getElementById('bg'), bgCtx = bgv.getContext('2d');
 const txv = document.getElementById('tx'), txCtx = txv.getContext('2d');
 let ctx = mainCtx;   // tile() draws into whichever layer ctx points at
 const field = document.createElement('canvas'), fctx = field.getContext('2d', { willReadFrequently: true });
-let W, H, DPR, cols, rows, cellRand, T;
+const dfield = document.createElement('canvas'), dctx = dfield.getContext('2d', { willReadFrequently: true });
+let W, H, DPR, cols, rows, cellRand, T, floorY, lastBg = -1e9;
 function resize() {
   DPR = window.devicePixelRatio || 1; W = innerWidth; H = innerHeight;
   for (const [c, g] of [[cv, mainCtx], [bgv, bgCtx], [txv, txCtx]]) { c.width = Math.round(W * DPR); c.height = Math.round(H * DPR); g.setTransform(DPR, 0, 0, DPR, 0, 0); }
-  textDirty = 'init'; lastBg = -1e9;
-  cols = Math.ceil(W / S); rows = Math.ceil(H / S);
-  field.width = cols; field.height = rows;
+  cols = Math.ceil(W / S); rows = Math.ceil(H / S); floorY = (rows - 2) * S;
+  field.width = dfield.width = cols; field.height = dfield.height = rows;
   cellRand = new Float32Array(cols * rows).map(() => Math.random());
   document.body.style.backgroundImage = 'linear-gradient(#0e1112 1px, transparent 1px), linear-gradient(90deg, #0e1112 1px, transparent 1px)';
   document.body.style.backgroundSize = `${S}px ${S}px`;
-  buildAtlas(); buildText(); spawnKelp();
+  specks = Array.from({ length: Math.round(cols * rows / 110) }, () => ({ x: Math.random() * W, y: Math.random() * H, v: 2 + Math.random() * 5, a: 0.15 + Math.random() * 0.25 }));
+  buildAtlas(); drawWords(); lastBg = -1e9;
 }
 
 // ---------- tile atlas: (hue, level, glyph) -> small tile ----------
-const GLYPHS = '.:-otsxSX%8#@()|,*♥';
+const GLYPHS = '.:-otsxSX%8#@,*♥';
 const LEVEL_GLYPHS = ['.:-', ':-o', 'ts:o', 'tsxS', 'SX%8', '%8#@'];
-const HUES = { blue: [150, 160, 182], tan: [168, 153, 122], pink: [214, 110, 160], teal: [110, 176, 168], violet: [150, 130, 205], gold: [205, 170, 90], kelp: [84, 140, 96], sand: [120, 108, 84] };
+const HUES = { blue: [150, 160, 182], tan: [168, 153, 122], grey: [120, 122, 124], pink: [214, 110, 160], teal: [110, 176, 168], violet: [150, 130, 205], gold: [205, 170, 90], sand: [120, 108, 84] };
 const HUE_NAMES = Object.keys(HUES), LEVELS = 6;
 const HI = n => HUE_NAMES.indexOf(n);
 const atlas = document.createElement('canvas'), actx = atlas.getContext('2d');
@@ -86,58 +90,87 @@ function glyphFor(level, cell, t) {
   return GI[set[(r * 97 + Math.floor(t * 0.0006 + r * 5)) % set.length | 0]];
 }
 
-// ---------- families, names, lineage log ----------
+// ---------- the words: constant, crisp, drawn once ----------
+function drawWords() {
+  const g = txCtx, fs = Math.round(Math.min(W * 0.085, 150) * 0.7);
+  g.clearRect(0, 0, W, H);
+  g.font = `400 ${fs}px "Iowan Old Style", "Hoefler Text", Georgia, serif`;
+  const lines = []; let cur = '';
+  for (const w of QUOTE.split(' ')) { const t = cur ? cur + ' ' + w : w; if (g.measureText(t).width > W * 0.7 && cur) { lines.push(cur); cur = w; } else cur = t; }
+  lines.push(cur);
+  const lh = fs * 1.15, top = H * 0.46 - (lines.length - 1) * lh / 2, maxw = Math.max(...lines.map(l => g.measureText(l).width)), left = (W - maxw) / 2;
+  g.fillStyle = '#ececec'; g.textBaseline = 'middle';
+  lines.forEach((l, i) => g.fillText(l, left, top + i * lh));
+}
+
+// ---------- families, names, events (stored by the host in SQLite) ----------
 const SYL = ['ka', 'mi', 'ro', 've', 'lu', 'sa', 'ti', 'no', 'be', 'ra', 'do', 'ze', 'fi', 'ol', 'an', 'ish', 'um', 'pe', 'yo', 'ki'];
-const newName = () => { const n = SYL[Math.random() * SYL.length | 0] + SYL[Math.random() * SYL.length | 0]; return n[0].toUpperCase() + n.slice(1); };
+const usedNames = new Set((window.__saved && window.__saved.names) || []);   // every name ever given, dead sharks included
+const newName = () => {
+  for (let i = 0; i < 200; i++) {
+    const parts = 2 + (i > 100 ? 1 : 0), n = Array.from({ length: parts }, () => SYL[Math.random() * SYL.length | 0]).join('');
+    const name = n[0].toUpperCase() + n.slice(1);
+    if (!usedNames.has(name)) { usedNames.add(name); return name; }
+  }
+  return 'Shark' + nextId;
+};
 const FAMILY_HUES = ['teal', 'pink', 'violet', 'gold'];
 let families = [], log = [], nextId = 1;
 const clock = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-function note(text) {
-  const line = `${clock()}  ${text}`;
-  log.push({ t: performance.now(), line }); if (log.length > 300) log.shift();
-  if (host && host.log) { const d = new Date(), z = n => String(n).padStart(2, '0'); host.log.postMessage(`${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}  ${text}`); }
-  save();
-}
-
-// ---------- sharks ----------
-const N = 26;
-const sharks = [];
-function makeShark(o) {
-  const x = o.x ?? Math.random() * W, y = o.y ?? (0.1 + Math.random() * 0.75) * H, a = Math.random() * Math.PI * 2;
-  const pts = []; for (let i = 0; i < N; i++) pts.push({ x: x - Math.cos(a) * o.len * i / N, y: y - Math.sin(a) * o.len * i / N });
-  const sh = Object.assign({ id: nextId++, love: 0, full: 0.5, gen: 1, parents: [], born: Date.now() }, o,
-    { pts, a, phase: Math.random() * 10, tx: x, ty: y, tt: 0, orbit: Math.random() * Math.PI * 2, spinUntil: 0, tagUntil: 0 });
-  sh.spots = sh.kind === 'leopard' ? Array.from({ length: 34 }, () => ({ u: 0.12 + Math.random() * 0.75, s: (Math.random() * 2 - 1) * 0.8, r: 0.35 + Math.random() * 0.5 })) : [];
-  sharks.push(sh); sharks.sort((p, q) => p.depth - q.depth);
-  return sh;
-}
-const isBaby = sh => sh.len < sh.adultLen * 0.85;
-const byId = id => sharks.find(s => s.id === id);
-function foundFamilies() {
-  const m = Math.min(W, H);
-  const plan = [['hammer', 1.0, 0.4, 2], ['leopard', 0.9, 0.34, 2], ['hammer', 0.45, 0.24, 1], ['leopard', 0.4, 0.2, 1]];
-  plan.forEach(([kind, depth, size, babies], fi) => {
-    const fam = { id: fi, name: newName() + 's', hue: FAMILY_HUES[fi % FAMILY_HUES.length] }; families.push(fam);
-    const cx = (0.15 + 0.7 * Math.random()) * W, cy = (0.2 + 0.5 * Math.random()) * H;
-    const ma = makeShark({ name: newName(), kind, depth, family: fi, len: m * size, adultLen: m * size, x: cx, y: cy });
-    const pa = makeShark({ name: newName(), kind, depth, family: fi, len: m * size * 0.88, adultLen: m * size * 0.88, x: cx + 80, y: cy + 40 });
-    for (let b = 0; b < babies; b++) makeShark({ name: newName(), kind, depth, family: fi, gen: 2, parents: [ma.id, pa.id],
-      len: m * size * 0.3, adultLen: m * size * (0.85 + Math.random() * 0.2), x: cx - 40, y: cy + 20 * b });
-  });
-  note(`the tank opens: ${families.map(f => f.name).join(', ')}`);
-}
-function restore(saved) {
-  families = saved.families; log = (saved.log || []).map(line => ({ t: -1e9, line })); nextId = saved.nextId || 1;
-  for (const s of saved.sharks) makeShark(Object.assign({}, s, { x: undefined, y: undefined }));
-  nextId = Math.max(nextId, ...sharks.map(s => s.id + 1));
+function event(kind, text, shark) {
+  log.push({ t: performance.now(), line: `${clock()}  ${text}` }); if (log.length > 300) log.shift();
+  if (host && host.event) host.event.postMessage(JSON.stringify({ kind, text, shark: shark ? shark.id : null }));
 }
 let lastSave = 0;
 function save(force) {
   if (!host || !host.save) return;
-  const now = performance.now(); if (!force && now - lastSave < 3000) return; lastSave = now;
-  host.save.postMessage(JSON.stringify({ families, nextId, log: log.slice(-120).map(l => l.line),
+  const now = performance.now(); if (!force && now - lastSave < 5000) return; lastSave = now;
+  host.save.postMessage(JSON.stringify({ families,
     sharks: sharks.map(s => ({ id: s.id, name: s.name, kind: s.kind, depth: s.depth, family: s.family, gen: s.gen, parents: s.parents,
-      len: s.len, adultLen: s.adultLen, love: s.love, full: s.full, born: s.born })) }));
+      born: Math.round(s.born / TIME_SCALE), lifespan: s.lifespan, diedAt: s.diedAt || null,
+      len: s.len, adultLen: s.adultLen, love: s.love, full: s.full })) }));
+}
+const fmtAge = ms => { const m = Math.round(ms / 60000); return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`; };
+const localStamp = () => { const d = new Date(), z = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`; };
+
+// ---------- sharks ----------
+const N = 26;
+const sharks = [];
+const lifespan = () => (LIFE_HOURS[0] + Math.random() * (LIFE_HOURS[1] - LIFE_HOURS[0])) * 3600000;
+function makeShark(o) {
+  const x = o.x ?? Math.random() * W, y = o.y ?? (0.1 + Math.random() * 0.75) * H, a = o.a ?? Math.random() * Math.PI * 2;
+  const pts = []; for (let i = 0; i < N; i++) pts.push({ x: x - Math.cos(a) * o.len * i / N, y: y - Math.sin(a) * o.len * i / N });
+  const sh = Object.assign({ id: nextId++, love: 0, full: 0.5, gen: 1, parents: [], born: wall(), lifespan: lifespan() }, o,
+    { pts, a, phase: Math.random() * 10, tx: x, ty: y, tt: 0, orbit: Math.random() * Math.PI * 2, spinUntil: 0, tagUntil: 0, dead: null });
+  sh.spots = sh.kind === 'leopard' ? Array.from({ length: 34 }, () => ({ u: 0.12 + Math.random() * 0.75, s: (Math.random() * 2 - 1) * 0.8, r: 0.35 + Math.random() * 0.5 })) : [];
+  sh.sp = spine(sh);
+  sharks.push(sh); sharks.sort((p, q) => p.depth - q.depth);
+  return sh;
+}
+const alive = () => sharks.filter(s => !s.dead);
+const isBaby = sh => sh.len < sh.adultLen * 0.85;
+const byId = id => sharks.find(s => s.id === id && !s.dead);
+function foundFamily(kind, depth, size, babies, fromEdge) {
+  const m = Math.min(W, H), fi = families.length ? Math.max(...families.map(f => f.id)) + 1 : 0;
+  const fam = { id: fi, name: newName() + 's', hue: FAMILY_HUES[fi % FAMILY_HUES.length] }; families.push(fam);
+  const cx = fromEdge ? (Math.random() < 0.5 ? -m * 0.3 : W + m * 0.3) : (0.15 + 0.7 * Math.random()) * W, cy = (0.2 + 0.5 * Math.random()) * H;
+  const a = fromEdge ? (cx < 0 ? 0 : Math.PI) : undefined;
+  const ma = makeShark({ name: newName(), kind, depth, family: fi, len: m * size, adultLen: m * size, x: cx, y: cy, a });
+  const pa = makeShark({ name: newName(), kind, depth, family: fi, len: m * size * 0.88, adultLen: m * size * 0.88, x: cx, y: cy + 60, a });
+  for (let b = 0; b < babies; b++) makeShark({ name: newName(), kind, depth, family: fi, gen: 2, parents: [ma.id, pa.id],
+    len: m * size * 0.3, adultLen: m * size * (0.85 + Math.random() * 0.2), x: cx, y: cy + 30 + 20 * b, a });
+  return fam;
+}
+function openTank() {
+  [['hammer', 1.0, 0.4, 2], ['leopard', 0.9, 0.34, 2], ['hammer', 0.45, 0.24, 1], ['leopard', 0.4, 0.2, 1]]
+    .forEach(([k, d, s, b]) => foundFamily(k, d, s, b, false));
+  save(true);
+  event('opened', `the tank opens: ${families.map(f => f.name).join(', ')}`);
+}
+function restore(saved) {
+  families = saved.families; log = (saved.log || []).map(line => ({ t: -1e9, line })); nextId = saved.nextId || 1;
+  for (const s of saved.sharks) makeShark(Object.assign({}, s, { born: s.born * TIME_SCALE, x: undefined, y: undefined }));
+  nextId = Math.max(nextId, ...sharks.map(s => s.id + 1));
 }
 function width(kind, u) {
   const body = u < 0.14 ? 0.1 * Math.pow(u / 0.14, 0.55) : 0.1 * Math.pow(1 - (u - 0.14) / 0.86, 1.2) + 0.01;
@@ -145,29 +178,36 @@ function width(kind, u) {
 }
 
 // ---------- input: hover = adults circle; click shark = love; click water = food ----------
-let mx = -1e4, my = -1e4, mouseT = -1e9, food = [], hearts = [];
-let kelp = [], bubbles = [], specks = [];
+let mx = -1e4, my = -1e4, mouseT = -1e9, food = [], hearts = [], bubbles = [], specks = [];
 window.__mouse = (x, y) => { mx = x; my = y; mouseT = performance.now(); };
 window.__click = (x, y) => {
   const now = performance.now();
   let hit = null;
-  for (const sh of [...sharks].reverse()) {                     // nearest-to-glass first
-    for (const p of sh.sp || []) if (Math.hypot(p.x - x, p.y - y) < width(sh.kind, p.u) * sh.len * 1.4 + 8) { hit = sh; break; }
+  for (const sh of [...sharks].reverse()) {
+    if (sh.dead) continue;
+    for (const p of sh.sp) if (Math.hypot(p.x - x, p.y - y) < width(sh.kind, p.u) * sh.len * 1.4 + 8) { hit = sh; break; }
     if (hit) break;
   }
   if (hit) {
     hit.love++; hit.spinUntil = now + 2200; hit.tagUntil = now + 5000;
     for (let i = 0; i < 6 + Math.min(10, hit.love); i++) hearts.push({ x: hit.sp[2].x + (Math.random() - .5) * 40, y: hit.sp[2].y, v: 25 + Math.random() * 35, w: Math.random() * 6, life: 2.5 + Math.random() });
-    note(`you loved ${hit.name} ${'♥'.repeat(Math.min(hit.love, 5))}${hit.love > 5 ? ' ×' + hit.love : ''}`);
+    event('loved', `you loved ${hit.name} ${'♥'.repeat(Math.min(hit.love, 5))}${hit.love > 5 ? ' ×' + hit.love : ''}`, hit);
+    save();
   } else {
-    for (let i = 0; i < 5; i++) food.push({ x: x + (Math.random() - .5) * 40, y: y + (Math.random() - .5) * 16, v: 14 + Math.random() * 10, w: Math.random() * 6, born: now });
+    for (let i = 0; i < 5; i++) food.push({ x: x + (Math.random() - .5) * 40, y: y + (Math.random() - .5) * 16, v: 14 + Math.random() * 10, w: Math.random() * 6, until: now + 90000 });
     for (let i = 0; i < 6; i++) bubbles.push(bubble(x + (Math.random() - .5) * 30, y));
-    kick(x, y, 90, 300);
   }
 };
 addEventListener('mousemove', e => window.__mouse(e.clientX, e.clientY));
 addEventListener('mousedown', e => window.__click(e.clientX, e.clientY));
 
+function follow(sh) {
+  const seg = sh.len / (N - 1);
+  for (let i = 1; i < N; i++) {
+    const p = sh.pts[i], q = sh.pts[i - 1], dx = q.x - p.x, dy = q.y - p.y, l = Math.hypot(dx, dy) || 1;
+    p.x = q.x - dx / l * seg; p.y = q.y - dy / l * seg;
+  }
+}
 function steer(sh, dt, now, idx) {
   const h = sh.pts[0];
   let speed = sh.len * 0.17, turnRate = 0.9;
@@ -182,7 +222,7 @@ function steer(sh, dt, now, idx) {
     sh.tx = pellet.x; sh.ty = pellet.y; speed *= 2.1; turnRate = 2.2;
     if (Math.hypot(pellet.x - h.x, pellet.y - h.y) < sh.len * 0.12 + 12) {
       food.splice(food.indexOf(pellet), 1); sh.full = Math.min(1, sh.full + 0.3);
-      if (Math.random() < 0.5) note(`${sh.name} ate${isBaby(sh) ? ' (growing)' : ''}`);
+      if (Math.random() < 0.5) event('fed', `${sh.name} ate${pellet.from ? ' what was left of ' + pellet.from : ''}${isBaby(sh) ? ' (growing)' : ''}`, sh);
       if (isBaby(sh)) sh.len = Math.min(sh.adultLen, sh.len + sh.adultLen * 0.03);
     }
   } else if (parent) {                                                // babies stay near a parent
@@ -195,7 +235,7 @@ function steer(sh, dt, now, idx) {
   } else {                                                            // wander the tank
     sh.tt -= dt;
     if (sh.tt <= 0 || Math.hypot(sh.tx - h.x, sh.ty - h.y) < sh.len * 0.3) {
-      sh.tx = -0.05 * W + Math.random() * 1.1 * W; sh.ty = 0.05 * H + Math.random() * 0.8 * H; sh.tt = 6 + Math.random() * 8;
+      sh.tx = -0.05 * W + Math.random() * 1.1 * W; sh.ty = 0.05 * H + Math.random() * 0.75 * H; sh.tt = 6 + Math.random() * 8;
     }
   }
   const want = Math.atan2(sh.ty - h.y, sh.tx - h.x);
@@ -204,24 +244,57 @@ function steer(sh, dt, now, idx) {
   sh.speed = (sh.speed || speed) + (speed - (sh.speed || speed)) * Math.min(1, dt * 1.5);
   h.x += Math.cos(sh.a) * sh.speed * dt; h.y += Math.sin(sh.a) * sh.speed * dt;
   sh.phase += dt * (2.2 + sh.speed / sh.len * 4);
-  const seg = sh.len / (N - 1);
-  for (let i = 1; i < N; i++) {
-    const p = sh.pts[i], q = sh.pts[i - 1], dx = q.x - p.x, dy = q.y - p.y, l = Math.hypot(dx, dy) || 1;
-    p.x = q.x - dx / l * seg; p.y = q.y - dy / l * seg;
+  follow(sh);
+}
+
+// ---------- death: sink, rest on the sand, fall apart into food ----------
+const SINK_SPEED = 26, REST_MS = 20000, DECAY_MS = 70000;
+function die(sh, now) {
+  sh.dead = { stage: 'sink', t: now, drift: (Math.random() - .5) * 8, pellets: 0 };
+  sh.diedAt = localStamp(); sh.tagUntil = 0;
+  save(true);
+  event('died', `${sh.name} died · gen ${sh.gen} · ${(families.find(f => f.id === sh.family) || {}).name || ''} · lived ${fmtAge(wall() - sh.born)}`, sh);
+}
+function sinkAndDecay(sh, dt, now) {
+  const D = sh.dead;
+  if (D.stage === 'sink') {
+    let resting = 0;
+    for (const p of sh.pts) {
+      p.y = Math.min(floorY - 2, p.y + SINK_SPEED * dt * (0.8 + 0.4 * Math.sin(p.x * 0.01)));
+      p.x += D.drift * dt;
+      if (p.y >= floorY - 3) resting++;
+    }
+    sh.pts.forEach((p, i) => { if (i) { const q = sh.pts[i - 1], dx = q.x - p.x, dy = q.y - p.y, l = Math.hypot(dx, dy), seg = sh.len / (N - 1); if (l > seg) { p.x = q.x - dx / l * seg; p.y = q.y - dy / l * seg; } } });
+    if (resting > N * 0.8 || now - D.t > 90000) { D.stage = 'rest'; D.t = now; }
+  } else if (D.stage === 'rest') {
+    if (now - D.t > REST_MS) { D.stage = 'decay'; D.t = now; }
+  } else {
+    D.decay = Math.min(1, (now - D.t) / DECAY_MS);
+    const total = Math.round(6 + sh.len / 25);                       // bigger sharks leave more food
+    while (D.pellets < total * D.decay) {
+      const p = sh.pts[Math.random() * N | 0];
+      food.push({ x: p.x + (Math.random() - .5) * 12, y: p.y - 4, v: -18 - Math.random() * 14, w: Math.random() * 6, until: now + 300000, from: sh.name });
+      D.pellets++;
+    }
+    if (D.decay >= 1) {
+      sharks.splice(sharks.indexOf(sh), 1);
+      event('returned', `${sh.name} returned to the tank as food`, sh);
+    }
   }
 }
+
 function spine(sh) {
-  const L = sh.len, pts = sh.pts, n = pts.length;
+  const L = sh.len, pts = sh.pts, n = pts.length, still = !!sh.dead;
   return pts.map((p, i) => {
     const u = i / (n - 1), q = pts[Math.max(0, i - 1)], r = pts[Math.min(n - 1, i + 1)];
     let tx = q.x - r.x, ty = q.y - r.y; const l = Math.hypot(tx, ty) || 1; tx /= l; ty /= l;
-    const wave = Math.sin(sh.phase - u * 5.5) * L * 0.045 * Math.pow(u, 1.5);
+    const wave = still ? 0 : Math.sin(sh.phase - u * 5.5) * L * 0.045 * Math.pow(u, 1.5);
     return { x: p.x - ty * wave, y: p.y + tx * wave, tx, ty, nx: -ty, ny: tx, u };
   });
 }
 function drawShark(g, sh, sp) {
-  const L = sh.len, n = sp.length, dim = 0.45 + 0.55 * sh.depth;
-  const base = sh.kind === 'hammer' ? [138, 150, 178] : [170, 155, 120];
+  const L = sh.len, n = sp.length, dim = (0.45 + 0.55 * sh.depth) * (sh.dead ? 0.75 : 1);
+  const base = sh.dead ? [128, 128, 126] : sh.kind === 'hammer' ? [138, 150, 178] : [170, 155, 120];
   const col = k => `rgb(${base[0] * k * dim | 0},${base[1] * k * dim | 0},${base[2] * k * dim | 0})`;
   const at = u => Math.round(u * (n - 1));
   const fin = (i, side, out, back, root, k) => {
@@ -250,11 +323,13 @@ function drawShark(g, sh, sp) {
     g.lineTo(h.x + h.nx * hw * 0.9 - h.tx * hd, h.y + h.ny * hw * 0.9 - h.ty * hd);
     g.closePath(); g.fill();
   }
-  g.strokeStyle = col(1.18); g.lineWidth = L * 0.03;
-  g.beginPath(); for (let i = 1; i < n * 0.8; i++) { const p = sp[i]; i > 1 ? g.lineTo(p.x, p.y) : g.moveTo(p.x, p.y); } g.stroke();
-  const d = sp[at(0.38)];
-  g.strokeStyle = col(1.3); g.lineWidth = L * 0.022;
-  g.beginPath(); g.moveTo(d.x, d.y); g.lineTo(d.x - d.tx * L * 0.1, d.y - d.ty * L * 0.1); g.stroke();
+  if (!sh.dead) {
+    g.strokeStyle = col(1.18); g.lineWidth = L * 0.03;
+    g.beginPath(); for (let i = 1; i < n * 0.8; i++) { const p = sp[i]; i > 1 ? g.lineTo(p.x, p.y) : g.moveTo(p.x, p.y); } g.stroke();
+    const d = sp[at(0.38)];
+    g.strokeStyle = col(1.3); g.lineWidth = L * 0.022;
+    g.beginPath(); g.moveTo(d.x, d.y); g.lineTo(d.x - d.tx * L * 0.1, d.y - d.ty * L * 0.1); g.stroke();
+  }
   for (const s of sh.spots) {
     const p = sp[at(s.u)], w = width(sh.kind, p.u) * L;
     g.fillStyle = `rgb(${62 * dim | 0},${55 * dim | 0},${44 * dim | 0})`; g.beginPath();
@@ -262,99 +337,53 @@ function drawShark(g, sh, sp) {
   }
 }
 
-// ---------- breeding ----------
-function breed(now) {
-  if (sharks.length >= MAX_SHARKS) return;
-  const adults = sharks.filter(s => !isBaby(s) && s.full > 0.6);
+// ---------- breeding, and newcomers when the tank runs low ----------
+function breed() {
+  if (alive().length >= MAX_SHARKS) return;
+  const adults = alive().filter(s => !isBaby(s) && s.full > 0.6);
   for (let i = 0; i < adults.length; i++) for (let j = i + 1; j < adults.length; j++) {
     const a = adults[i], b = adults[j];
     if (a.kind !== b.kind || a.parents.includes(b.id) || b.parents.includes(a.id)) continue;
     if (a.parents.length && a.parents.some(p => b.parents.includes(p))) continue;          // no siblings
-    const loved = Math.min(a.love, b.love);
-    if (Math.random() > 0.25 + 0.1 * loved) continue;
-    const fam = a.family, gen = Math.max(a.gen, b.gen) + 1;
+    if (Math.random() > 0.25 + 0.1 * Math.min(a.love, b.love)) continue;
+    const gen = Math.max(a.gen, b.gen) + 1;
     a.full -= 0.4; b.full -= 0.4;
-    const kid = makeShark({ name: newName(), kind: a.kind, depth: a.depth, family: fam, gen, parents: [a.id, b.id],
+    const kid = makeShark({ name: newName(), kind: a.kind, depth: a.depth, family: a.family, gen, parents: [a.id, b.id],
       len: a.adultLen * 0.28, adultLen: (a.adultLen + b.adultLen) / 2 * (0.9 + Math.random() * 0.2), x: a.pts[10].x, y: a.pts[10].y });
-    const famName = families[fam] ? families[fam].name : '';
-    note(`${kid.name} was born to ${a.name} & ${b.name} · gen ${gen} · ${famName}`);
+    save(true);
+    event('born', `${kid.name} was born to ${a.name} & ${b.name} · gen ${gen} · ${(families.find(f => f.id === a.family) || {}).name || ''}`, kid);
     for (let k = 0; k < 8; k++) hearts.push({ x: kid.pts[0].x + (Math.random() - .5) * 30, y: kid.pts[0].y, v: 20 + Math.random() * 30, w: Math.random() * 6, life: 3 });
     return;
   }
 }
-
-// ---------- the words: permanent, fine dots that scatter and settle ----------
-const FONT = '"Iowan Old Style", "Hoefler Text", Georgia, serif';
-let dots = [], textBox = { x0: 0, y0: 0, x1: 0, y1: 0 }, looseUntil = 0;
-function buildText() {
-  const off = document.createElement('canvas'), g = off.getContext('2d', { willReadFrequently: true });
-  off.width = Math.round(W * DPR); off.height = Math.round(H * DPR); g.setTransform(DPR, 0, 0, DPR, 0, 0);
-  const fs = Math.round(Math.min(W * 0.085, 150) * 0.7);       // 30% smaller than the version you liked
-  g.font = `400 ${fs}px ${FONT}`;
-  const lines = []; let cur = '';
-  for (const w of QUOTE.split(' ')) { const t = cur ? cur + ' ' + w : w; if (g.measureText(t).width > W * 0.7 && cur) { lines.push(cur); cur = w; } else cur = t; }
-  lines.push(cur);
-  const lh = fs * 1.15, top = H * 0.46 - (lines.length - 1) * lh / 2, maxw = Math.max(...lines.map(l => g.measureText(l).width)), left = (W - maxw) / 2;
-  g.fillStyle = '#000'; g.textBaseline = 'middle';
-  lines.forEach((l, i) => g.fillText(l, left, top + i * lh));
-  const d = g.getImageData(0, 0, off.width, off.height).data;
-  const first = !dots.length; dots = [];
-  for (let y = 0; y < H; y += TS) for (let x = 0; x < W; x += TS) {
-    const k = (Math.round((y + TS / 2) * DPR) * off.width + Math.round((x + TS / 2) * DPR)) * 4;
-    if (d[k + 3] > 110) dots.push({ hx: x, hy: y, x, y, vx: 0, vy: 0, r: Math.random() });
-  }
-  textBox = { x0: left - 40, x1: left + maxw + 40, y0: top - fs, y1: top + (lines.length - 1) * lh + fs };
-  if (first) scatterAll(1);
-}
-function scatterAll(strength) {
-  const cx = W / 2, cy = (textBox.y0 + textBox.y1) / 2;
-  for (const p of dots) {
-    const a = Math.atan2(p.y - cy, p.x - cx) + (Math.random() - .5) * 1.6, v = (180 + Math.random() * 520) * strength;
-    p.vx += Math.cos(a) * v; p.vy += Math.sin(a) * v - 60 * strength;
-  }
-  looseUntil = performance.now() + 2600;
-}
-function kick(x, y, radius, power) {
-  if (x + radius < textBox.x0 || x - radius > textBox.x1 || y + radius < textBox.y0 - 60 || y - radius > textBox.y1 + 60) return;
-  const r2 = radius * radius;
-  for (const p of dots) {
-    const dx = p.x - x, dy = p.y - y, d2 = dx * dx + dy * dy;
-    if (d2 < r2) { const d = Math.sqrt(d2) || 1, f = (1 - d / radius) * power; p.vx += dx / d * f + (Math.random() - .5) * f * 0.4; p.vy += dy / d * f + (Math.random() - .5) * f * 0.4; }
-  }
-}
-function updateDots(dt, now) {
-  const loose = now < looseUntil, k = loose ? 1.2 : 9, damp = Math.pow(loose ? 0.5 : 0.02, dt);
-  for (const sh of sharks) for (let i = 0; i < sh.sp.length; i += 3) { const p = sh.sp[i]; kick(p.x, p.y, width(sh.kind, p.u) * sh.len * 1.6 + 8, 26 * sh.depth); }
-  if (now - mouseT < 1500) kick(mx, my, 60, 18);
-  let moving = false;
-  for (const p of dots) {
-    const ox = p.hx - p.x, oy = p.hy - p.y;
-    if (ox * ox + oy * oy < 0.02 && p.vx * p.vx + p.vy * p.vy < 0.05) { p.x = p.hx; p.y = p.hy; p.vx = p.vy = 0; continue; }
-    moving = true;
-    p.vx += ox * k * dt * (0.6 + p.r); p.vy += oy * k * dt * (0.6 + p.r);
-    p.vx *= damp; p.vy *= damp; p.x += p.vx * dt; p.y += p.vy * dt;
-  }
-  textDirty = textDirty === 'init' || moving || wasMoving;   // one last redraw after the dots settle
-  wasMoving = moving;
-}
-let textDirty = 'init', wasMoving = true, lastBg = -1e9;
-let nextScatter = performance.now() + 30000 + Math.random() * 20000;
-
-// ---------- aquarium dressing ----------
-function spawnKelp() {
-  kelp = Array.from({ length: Math.max(6, Math.round(cols / 14)) }, () => ({ cx: Math.floor(Math.random() * cols), h: 6 + Math.floor(Math.random() * rows * 0.22), seed: Math.random() * 10 }));
-  specks = Array.from({ length: Math.round(cols * rows / 110) }, () => ({ x: Math.random() * W, y: Math.random() * H, v: 2 + Math.random() * 5, a: 0.15 + Math.random() * 0.25 }));
+function newcomers() {
+  if (alive().length >= MIN_ALIVE) return;
+  const fam = foundFamily(Math.random() < 0.5 ? 'hammer' : 'leopard', 0.6 + Math.random() * 0.4, 0.3 + Math.random() * 0.08, 1, true);
+  save(true);
+  event('arrived', `a new family drifts in: the ${fam.name}`);
 }
 function bubble(x, y) { return { x, y, v: 30 + Math.random() * 45, w: Math.random() * 6, g: Math.random() < 0.6 ? 1 : (Math.random() < 0.5 ? 0 : 2) }; }
 
 // ---------- start ----------
 resize();
-if (window.__saved && window.__saved.sharks && window.__saved.sharks.length) restore(window.__saved); else foundFamilies();
+if (window.__saved && window.__saved.sharks && window.__saved.sharks.length) restore(window.__saved); else openTank();
 addEventListener('resize', () => resize());
-let last = performance.now(), lastDraw = 0, frames = 0, nextBreed = performance.now() + 20000;
+let last = performance.now(), lastDraw = 0, frames = 0, nextBreed = performance.now() + 20000, nextCensus = performance.now() + 5000;
 window.__frames = () => frames;
 window.__sharks = sharks;
-window.__state = () => ({ sharks: sharks.length, log: log.slice(-5).map(l => l.line) });
+
+function rasterTiles(fd, deadPass) {
+  const blue = HI('blue'), tan = HI('tan'), grey = HI('grey');
+  for (let cy = 0, i = 0; cy < rows; cy++) for (let cx = 0; cx < cols; cx++, i++) {
+    const a = fd[i * 4 + 3] / 255;
+    if (a < 0.3) continue;
+    if (deadPass && cellRand[i] < deadPass[i]) continue;   // decaying cells drop out
+    const r = fd[i * 4], g = fd[i * 4 + 1], b = fd[i * 4 + 2];
+    const lum = (0.3 * r + 0.59 * g + 0.11 * b) / 255;
+    const lvl = Math.max(0, Math.min(LEVELS - 1, Math.floor(lum * a * 7.2)));
+    tile(deadPass ? grey : (b > r ? blue : tan), deadPass ? Math.max(0, lvl - 1) : lvl, glyphFor(lvl, i, performance.now()), cx * S, cy * S, a < 0.6 ? 0.6 : 1);
+  }
+}
 
 function frame(now) {
   requestAnimationFrame(frame);
@@ -362,73 +391,71 @@ function frame(now) {
   lastDraw = now; frames++;
   const dt = Math.min(0.1, (now - last) / 1000); last = now;
 
-  for (const sh of sharks) {                                   // hunger and growth
+  for (const sh of [...sharks]) {
+    if (sh.dead) { sinkAndDecay(sh, dt, now); continue; }
+    if (wall() > sh.born + sh.lifespan) { die(sh, now); continue; }
     sh.full = Math.max(0, sh.full - dt / 900);
-    if (isBaby(sh)) sh.len = Math.min(sh.adultLen, sh.len + sh.adultLen * dt / GROW_SECONDS);
+    if (isBaby(sh)) sh.len = Math.min(sh.adultLen, sh.len + sh.adultLen * dt * TIME_SCALE / GROW_SECONDS);
   }
-  sharks.forEach((sh, i) => steer(sh, dt, now, i));
+  alive().forEach((sh, i) => steer(sh, dt, now, i));
   for (const sh of sharks) sh.sp = spine(sh);
-  if (now > nextBreed) { breed(now); nextBreed = now + 20000; save(); }
+  if (now > nextBreed) { breed(); nextBreed = now + 20000; save(); }
+  if (now > nextCensus) { newcomers(); nextCensus = now + 60000; }
 
-  fctx.setTransform(1, 0, 0, 1, 0, 0); fctx.clearRect(0, 0, cols, rows);
-  fctx.setTransform(1 / S, 0, 0, 1 / S, 0, 0);
-  for (const sh of sharks) drawShark(fctx, sh, sh.sp);
+  // living sharks into one field, dead ones into another (so they can fall apart cell by cell)
+  fctx.setTransform(1, 0, 0, 1, 0, 0); fctx.clearRect(0, 0, cols, rows); fctx.setTransform(1 / S, 0, 0, 1 / S, 0, 0);
+  dctx.setTransform(1, 0, 0, 1, 0, 0); dctx.clearRect(0, 0, cols, rows); dctx.setTransform(1 / S, 0, 0, 1 / S, 0, 0);
+  const dead = sharks.filter(s => s.dead);
+  for (const sh of sharks) drawShark(sh.dead ? dctx : fctx, sh, sh.sp);
   const fd = fctx.getImageData(0, 0, cols, rows).data;
-
-  if (now > nextScatter) { scatterAll(0.7); nextScatter = now + 30000 + Math.random() * 30000; }
-  updateDots(dt, now);
-
-  if (now - lastBg > 200) {                                    // slow layer: light, sand, kelp (~5 fps)
-    lastBg = now; ctx = bgCtx;
-    ctx.globalAlpha = 1; ctx.clearRect(0, 0, W, H);
-  for (let i = 0; i < 3; i++) {                                 // light from above
-    const x = W * (0.5 + 0.45 * Math.sin(now * 0.00005 * (i + 1) + i * 2)), y = H * (0.3 + 0.2 * Math.cos(now * 0.00007 * (i + 2) + i));
-    const r = Math.min(W, H) * (0.35 + 0.1 * i), gr = ctx.createRadialGradient(x, y, 0, x, y, r);
-    gr.addColorStop(0, 'rgba(70,120,140,0.06)'); gr.addColorStop(1, 'rgba(70,120,140,0)');
-    ctx.fillStyle = gr; ctx.fillRect(x - r, y - r, r * 2, r * 2);
-  }
-  const sand = HI('sand'), kelpH = HI('kelp');
-  for (let cx = 0; cx < cols; cx++) {
-    const r = cellRand[cx], y = (rows - 1) * S;
-    tile(sand, r < 0.5 ? 0 : 1, GI[r < 0.3 ? '.' : r < 0.6 ? ',' : r < 0.85 ? ':' : 'o'], cx * S, y, 0.75);
-    if (r < 0.35) tile(sand, 0, GI[r < 0.15 ? '.' : ','], cx * S, y - S, 0.45);
-  }
-  for (const k of kelp) {
-    let prev = 0;
-    for (let j = 0; j < k.h; j++) {
-      const sway = Math.sin(now * 0.0007 + j * 0.32 + k.seed) * j * 0.13 + Math.sin(now * 0.0013 + k.seed) * j * 0.04;
-      const off = Math.round(sway), gl = off > prev ? ')' : off < prev ? '(' : '|'; prev = off;
-      tile(kelpH, Math.min(LEVELS - 1, 1 + (j / k.h * 3 | 0)), GI[gl], (k.cx + off) * S, (rows - 2 - j) * S, 0.8);
+  let decayMap = null, dd = null;
+  if (dead.length) {
+    dd = dctx.getImageData(0, 0, cols, rows).data;
+    decayMap = new Float32Array(cols * rows);
+    for (const sh of dead) {                                            // per-cell decay level of each corpse
+      const dcy = sh.dead.decay || 0; if (!dcy) continue;
+      for (const p of sh.pts) {
+        const cx = Math.floor(p.x / S), cy = Math.floor(p.y / S), rad = Math.ceil(sh.len * 0.25 / S);
+        for (let y = cy - rad; y <= cy + rad; y++) for (let x = cx - rad; x <= cx + rad; x++)
+          if (x >= 0 && y >= 0 && x < cols && y < rows) decayMap[y * cols + x] = Math.max(decayMap[y * cols + x], dcy);
+      }
     }
-    if (Math.random() < 0.05) bubbles.push(bubble(k.cx * S + S / 2, (rows - 2 - k.h) * S));
   }
+
+  // slow layer: light from above and the sand (~5 fps)
+  if (now - lastBg > 200) {
+    lastBg = now; ctx = bgCtx; ctx.globalAlpha = 1; ctx.clearRect(0, 0, W, H);
+    for (let i = 0; i < 3; i++) {
+      const x = W * (0.5 + 0.45 * Math.sin(now * 0.00005 * (i + 1) + i * 2)), y = H * (0.3 + 0.2 * Math.cos(now * 0.00007 * (i + 2) + i));
+      const r = Math.min(W, H) * (0.35 + 0.1 * i), gr = ctx.createRadialGradient(x, y, 0, x, y, r);
+      gr.addColorStop(0, 'rgba(70,120,140,0.06)'); gr.addColorStop(1, 'rgba(70,120,140,0)');
+      ctx.fillStyle = gr; ctx.fillRect(x - r, y - r, r * 2, r * 2);
+    }
+    const sand = HI('sand');
+    for (let cx = 0; cx < cols; cx++) {
+      const r = cellRand[cx], y = (rows - 1) * S;
+      tile(sand, r < 0.5 ? 0 : 1, GI[r < 0.3 ? '.' : r < 0.6 ? ',' : r < 0.85 ? ':' : 'o'], cx * S, y, 0.75);
+      if (r < 0.35) tile(sand, 0, GI[r < 0.15 ? '.' : ','], cx * S, y - S, 0.45);
+    }
     ctx = mainCtx;
   }
+
   ctx.globalAlpha = 1; ctx.clearRect(0, 0, W, H);
   for (const s of specks) {
     s.x += s.v * dt; if (s.x > W + S) s.x = -S;
     ctx.globalAlpha = s.a; ctx.drawImage(bubbleAtlas, 3 * T, 0, T, T, Math.floor(s.x / S) * S, Math.floor(s.y / S) * S, S, S);
   }
-  // food pellets sink to the sand
-  const gold = HI('gold');
-  food = food.filter(f => now - f.born < 90000);
+  if (dd) rasterTiles(dd, decayMap);                                    // corpses behind the living
+  const gold = HI('gold');                                              // food: sinks, corpse food first bobs up
+  food = food.filter(f => now < f.until);
   for (const f of food) {
-    f.y = Math.min((rows - 2) * S, f.y + f.v * dt);
+    f.v = Math.min(f.v + 30 * dt, 14 + (f.w % 1) * 10); f.y = Math.min(floorY, f.y + f.v * dt);
     tile(gold, 4, GI['*'], Math.floor((f.x + Math.sin(now * 0.002 + f.w) * 3) / S) * S, Math.floor(f.y / S) * S, 1);
   }
-  // sharks
-  const blue = HI('blue'), tan = HI('tan');
-  for (let cy = 0, i = 0; cy < rows; cy++) for (let cx = 0; cx < cols; cx++, i++) {
-    const a = fd[i * 4 + 3] / 255;
-    if (a < 0.3) continue;
-    const r = fd[i * 4], g = fd[i * 4 + 1], b = fd[i * 4 + 2];
-    const lum = (0.3 * r + 0.59 * g + 0.11 * b) / 255;
-    const lvl = Math.max(0, Math.min(LEVELS - 1, Math.floor(lum * a * 7.2)));
-    tile(b > r ? blue : tan, lvl, glyphFor(lvl, i, now), cx * S, cy * S, a < 0.6 ? 0.6 : 1);
-  }
-  // family colour: a few cells along each shark's back carry the family hue
-  for (const sh of sharks) {
-    const fh = HI((families[sh.family] || {}).hue || 'teal');
+  rasterTiles(fd, null);
+  for (const sh of sharks) {                                            // family colour along each living back
+    if (sh.dead) continue;
+    const fh = HI((families.find(f => f.id === sh.family) || {}).hue || 'teal');
     for (let i = 3; i < sh.sp.length * 0.7; i += 5) { const p = sh.sp[i]; tile(fh, 3, GI['%'], Math.floor(p.x / S) * S, Math.floor(p.y / S) * S, 0.9 * (0.5 + 0.5 * sh.depth)); }
   }
   if (Math.random() < dt * 0.6) bubbles.push(bubble(Math.random() * W, H - S * 2));
@@ -437,24 +464,19 @@ function frame(now) {
     b.y -= b.v * dt; const x = b.x + Math.sin(now * 0.003 + b.w) * 4;
     ctx.globalAlpha = 0.55; ctx.drawImage(bubbleAtlas, b.g * T, 0, T, T, Math.floor(x / S) * S, Math.floor(b.y / S) * S, S, S);
   }
-  const pink = HI('pink');                                      // hearts
+  const pink = HI('pink');
   hearts = hearts.filter(h => (h.life -= dt) > 0);
   for (const h of hearts) { h.y -= h.v * dt; tile(pink, 5, GI['♥'], Math.floor((h.x + Math.sin(now * 0.004 + h.w) * 6) / S) * S, Math.floor(h.y / S) * S, Math.min(1, h.life)); }
 
-  if (textDirty) {                                              // the words: own layer, redrawn only while dots move
-    txCtx.clearRect(0, 0, W, H); txCtx.fillStyle = '#ececec';
-    for (const p of dots) txCtx.fillRect(p.x, p.y, TS, TS);
-  }
-
   ctx.font = '500 11px Menlo, monospace'; ctx.textBaseline = 'middle';
-  for (const sh of sharks) if (now < sh.tagUntil) {             // name tags of loved sharks
-    const p = sh.sp[0], fam = families[sh.family] || {};
+  for (const sh of sharks) if (now < sh.tagUntil) {                     // name tags of loved sharks
+    const p = sh.sp[0], fam = families.find(f => f.id === sh.family) || {};
     ctx.globalAlpha = Math.min(1, (sh.tagUntil - now) / 800) * 0.9; ctx.fillStyle = '#f2d9e6';
-    ctx.fillText(`${sh.name} · gen ${sh.gen} · ${fam.name || ''} ${'♥'.repeat(Math.min(sh.love, 5))}`, p.x + 16, p.y - 16);
+    ctx.fillText(`${sh.name} · gen ${sh.gen} · ${fam.name || ''} · ${fmtAge(wall() - sh.born)} ${'♥'.repeat(Math.min(sh.love, 5))}`, p.x + 16, p.y - 16);
   }
-  const recent = log.slice(-5);                                 // lineage log, bottom-left
+  const recent = log.slice(-5);                                         // recent events, bottom-left
   recent.forEach((l, i) => {
-    const age = (now - l.t) / 1000, fresh = age < 8 ? 1 : 0.5;
+    const fresh = (now - l.t) / 1000 < 8 ? 1 : 0.5;
     ctx.globalAlpha = (0.25 + 0.12 * (i + 1)) * fresh; ctx.fillStyle = '#cfd6d8';
     ctx.fillText(l.line, 28, H - 44 - (recent.length - 1 - i) * 15);
   });

@@ -6,7 +6,7 @@ ROOT="$PWD"
 APP="$ROOT/build/LivingWallpaper.app"
 SDK=$(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX15*.sdk 2>/dev/null | sort -V | tail -1)
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-swiftc -O ${SDK:+-sdk} ${SDK:+"$SDK"} -o "$APP/Contents/MacOS/LivingWallpaper" app/main.swift -framework Cocoa -framework WebKit
+swiftc -O ${SDK:+-sdk} ${SDK:+"$SDK"} -o "$APP/Contents/MacOS/LivingWallpaper" app/main.swift -framework Cocoa -framework WebKit -lsqlite3
 ln -sfn "$ROOT/web" "$APP/Contents/Resources/web"      # edits to web/ show up after a restart
 cat > "$APP/Contents/Info.plist" <<PL
 <?xml version="1.0" encoding="UTF-8"?>
