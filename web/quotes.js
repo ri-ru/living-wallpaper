@@ -1,4 +1,4 @@
-// The words the sharks write. Add more entries to rotate through them.
+// The words the sharks swim through. Only the first entry is shown.
 window.QUOTES = [
-  { text: "Evil is whatever distracts." },
+  { text: "Evil is whatever distracts." },   // Franz Kafka, Zürau aphorisms
 ];

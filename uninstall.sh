@@ -1,6 +1,6 @@
 #!/bin/zsh
-# Stop the wallpaper and remove it from login.
-launchctl bootout gui/$(id -u)/io.github.ri-ru.living-wallpaper 2>/dev/null
-mkdir -p ~/to-delete && mv ~/Library/LaunchAgents/io.github.ri-ru.living-wallpaper.plist ~/to-delete/ 2>/dev/null && \
-  echo "io.github.ri-ru.living-wallpaper.plist | ~/Library/LaunchAgents | $(date +%F) | living wallpaper uninstalled" >> ~/to-delete/manifest.txt
-echo stopped
+# Stop the wallpaper and remove it from login. Your tank (the SQLite file) is kept.
+LABEL="io.github.ri-ru.living-wallpaper"
+launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null
+rm -f "$HOME/Library/LaunchAgents/$LABEL.plist"
+echo "stopped. Your tank is still in ~/Library/Application Support/LivingWallpaper/tank.sqlite"
