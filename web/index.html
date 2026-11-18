@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Living Wallpaper</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background-color: #050607; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+</style>
+</head>
+<body>
+<canvas id="bg"></canvas>
+<canvas id="c"></canvas>
+<canvas id="tx"></canvas>
+<script src="quotes.js"></script>
+<script>
+window.__errs = [];
+addEventListener('error', e => window.__errs.push(e.message + ' @' + e.lineno));
+(() => {
+const P = new URLSearchParams(location.search);
+const QUOTE = ((window.QUOTES && window.QUOTES[0]) || { text: 'Evil is whatever distracts.' }).text;
+const S = +P.get('cell') || 10;            // shark / aquarium cell size, css px
+const TS = 2;                              // text dot pitch, css px
+const FPS = +P.get('fps') || 15;           // measured 2026-11-19 on this Mac: ~32% of one core at 15 fps, ~42% at 20
+const MAX_SHARKS = 24;                     // my guess, not measured: GPU cost grows with shark area; raise it and re-measure
+const GROW_SECONDS = 15 * 60;              // a baby reaches adult size in ~15 minutes
+const host = window.webkit && window.webkit.messageHandlers;
+
+// ---------- canvas & grid ----------
+const cv = document.getElementById('c'), mainCtx = cv.getContext('2d');
+const bgv = document.getElementById('bg'), bgCtx = bgv.getContext('2d');
+const txv = document.getElementById('tx'), txCtx = txv.getContext('2d');
+let ctx = mainCtx;   // tile() draws into whichever layer ctx points at
+const field = document.createElement('canvas'), fctx = field.getContext('2d', { willReadFrequently: true });
+let W, H, DPR, cols, rows, cellRand, T;
+function resize() {
+  DPR = window.devicePixelRatio || 1; W = innerWidth; H = innerHeight;
+  for (const [c, g] of [[cv, mainCtx], [bgv, bgCtx], [txv, txCtx]]) { c.width = Math.round(W * DPR); c.height = Math.round(H * DPR); g.setTransform(DPR, 0, 0, DPR, 0, 0); }
+  textDirty = 'init'; lastBg = -1e9;
+  cols = Math.ceil(W / S); rows = Math.ceil(H / S);
+  field.width = cols; field.height = rows;
+  cellRand = new Float32Array(cols * rows).map(() => Math.random());
+  document.body.style.backgroundImage = 'linear-gradient(#0e1112 1px, transparent 1px), linear-gradient(90deg, #0e1112 1px, transparent 1px)';
+  document.body.style.backgroundSize = `${S}px ${S}px`;
+  buildAtlas(); buildText(); spawnKelp();
+}
+
+// ---------- tile atlas: (hue, level, glyph) -> small tile ----------
+const GLYPHS = '.:-otsxSX%8#@()|,*♥';
+const LEVEL_GLYPHS = ['.:-', ':-o', 'ts:o', 'tsxS', 'SX%8', '%8#@'];
+const HUES = { blue: [150, 160, 182], tan: [168, 153, 122], pink: [214, 110, 160], teal: [110, 176, 168], violet: [150, 130, 205], gold: [205, 170, 90], kelp: [84, 140, 96], sand: [120, 108, 84] };
+const HUE_NAMES = Object.keys(HUES), LEVELS = 6;
+const HI = n => HUE_NAMES.indexOf(n);
+const atlas = document.createElement('canvas'), actx = atlas.getContext('2d');
+const bubbleAtlas = document.createElement('canvas');
+function buildAtlas() {
+  T = Math.round(S * DPR);
+  atlas.width = GLYPHS.length * T; atlas.height = HUE_NAMES.length * LEVELS * T;
+  actx.textAlign = 'center'; actx.textBaseline = 'middle';
+  actx.font = `500 ${Math.round(T * 0.92)}px Menlo, "SF Mono", Monaco, monospace`;
+  HUE_NAMES.forEach((h, hi) => {
+    const [r, g, b] = HUES[h];
+    for (let l = 0; l < LEVELS; l++) {
+      const k = 0.2 + 0.5 * l / (LEVELS - 1), gk = 0.62 + 0.62 * l / (LEVELS - 1);
+      const bg = `rgb(${r * k | 0},${g * k | 0},${b * k | 0})`;
+      const fg = `rgb(${Math.min(255, r * gk + 20) | 0},${Math.min(255, g * gk + 20) | 0},${Math.min(255, b * gk + 20) | 0})`;
+      for (let c = 0; c < GLYPHS.length; c++) {
+        const x = c * T, y = (hi * LEVELS + l) * T, inset = Math.max(1, Math.round(T * 0.08));
+        actx.fillStyle = bg; actx.fillRect(x + inset, y + inset, T - inset * 2, T - inset * 2);
+        actx.fillStyle = fg; actx.fillText(GLYPHS[c], x + T / 2, y + T / 2 + T * 0.04);
+      }
+    }
+  });
+  bubbleAtlas.width = 4 * T; bubbleAtlas.height = T;           // loose glyphs: bubbles and specks
+  const g = bubbleAtlas.getContext('2d');
+  g.font = `400 ${Math.round(T * 0.9)}px Menlo, monospace`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = 'rgb(170,200,210)';
+  [...'.oO-'].forEach((c, i) => g.fillText(c, i * T + T / 2, T / 2));
+}
+const GI = {}; [...GLYPHS].forEach((c, i) => GI[c] = i);
+function tile(hue, level, glyph, x, y, alpha) {
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(atlas, glyph * T, (hue * LEVELS + level) * T, T, T, x, y, S, S);
+}
+function glyphFor(level, cell, t) {
+  const set = LEVEL_GLYPHS[level], r = cellRand[cell];
+  return GI[set[(r * 97 + Math.floor(t * 0.0006 + r * 5)) % set.length | 0]];
+}
+
+// ---------- families, names, lineage log ----------
+const SYL = ['ka', 'mi', 'ro', 've', 'lu', 'sa', 'ti', 'no', 'be', 'ra', 'do', 'ze', 'fi', 'ol', 'an', 'ish', 'um', 'pe', 'yo', 'ki'];
+const newName = () => { const n = SYL[Math.random() * SYL.length | 0] + SYL[Math.random() * SYL.length | 0]; return n[0].toUpperCase() + n.slice(1); };
+const FAMILY_HUES = ['teal', 'pink', 'violet', 'gold'];
+let families = [], log = [], nextId = 1;
+const clock = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+function note(text) {
+  const line = `${clock()}  ${text}`;
+  log.push({ t: performance.now(), line }); if (log.length > 300) log.shift();
+  if (host && host.log) { const d = new Date(), z = n => String(n).padStart(2, '0'); host.log.postMessage(`${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}  ${text}`); }
+  save();
+}
+
+// ---------- sharks ----------
+const N = 26;
+const sharks = [];
+function makeShark(o) {
+  const x = o.x ?? Math.random() * W, y = o.y ?? (0.1 + Math.random() * 0.75) * H, a = Math.random() * Math.PI * 2;
+  const pts = []; for (let i = 0; i < N; i++) pts.push({ x: x - Math.cos(a) * o.len * i / N, y: y - Math.sin(a) * o.len * i / N });
+  const sh = Object.assign({ id: nextId++, love: 0, full: 0.5, gen: 1, parents: [], born: Date.now() }, o,
+    { pts, a, phase: Math.random() * 10, tx: x, ty: y, tt: 0, orbit: Math.random() * Math.PI * 2, spinUntil: 0, tagUntil: 0 });
+  sh.spots = sh.kind === 'leopard' ? Array.from({ length: 34 }, () => ({ u: 0.12 + Math.random() * 0.75, s: (Math.random() * 2 - 1) * 0.8, r: 0.35 + Math.random() * 0.5 })) : [];
+  sharks.push(sh); sharks.sort((p, q) => p.depth - q.depth);
+  return sh;
+}
+const isBaby = sh => sh.len < sh.adultLen * 0.85;
+const byId = id => sharks.find(s => s.id === id);
+function foundFamilies() {
+  const m = Math.min(W, H);
+  const plan = [['hammer', 1.0, 0.4, 2], ['leopard', 0.9, 0.34, 2], ['hammer', 0.45, 0.24, 1], ['leopard', 0.4, 0.2, 1]];
+  plan.forEach(([kind, depth, size, babies], fi) => {
+    const fam = { id: fi, name: newName() + 's', hue: FAMILY_HUES[fi % FAMILY_HUES.length] }; families.push(fam);
+    const cx = (0.15 + 0.7 * Math.random()) * W, cy = (0.2 + 0.5 * Math.random()) * H;
+    const ma = makeShark({ name: newName(), kind, depth, family: fi, len: m * size, adultLen: m * size, x: cx, y: cy });
+    const pa = makeShark({ name: newName(), kind, depth, family: fi, len: m * size * 0.88, adultLen: m * size * 0.88, x: cx + 80, y: cy + 40 });
+    for (let b = 0; b < babies; b++) makeShark({ name: newName(), kind, depth, family: fi, gen: 2, parents: [ma.id, pa.id],
+      len: m * size * 0.3, adultLen: m * size * (0.85 + Math.random() * 0.2), x: cx - 40, y: cy + 20 * b });
+  });
+  note(`the tank opens: ${families.map(f => f.name).join(', ')}`);
+}
+function restore(saved) {
+  families = saved.families; log = (saved.log || []).map(line => ({ t: -1e9, line })); nextId = saved.nextId || 1;
+  for (const s of saved.sharks) makeShark(Object.assign({}, s, { x: undefined, y: undefined }));
+  nextId = Math.max(nextId, ...sharks.map(s => s.id + 1));
+}
+let lastSave = 0;
+function save(force) {
+  if (!host || !host.save) return;
+  const now = performance.now(); if (!force && now - lastSave < 3000) return; lastSave = now;
+  host.save.postMessage(JSON.stringify({ families, nextId, log: log.slice(-120).map(l => l.line),
+    sharks: sharks.map(s => ({ id: s.id, name: s.name, kind: s.kind, depth: s.depth, family: s.family, gen: s.gen, parents: s.parents,
+      len: s.len, adultLen: s.adultLen, love: s.love, full: s.full, born: s.born })) }));
+}
+function width(kind, u) {
+  const body = u < 0.14 ? 0.1 * Math.pow(u / 0.14, 0.55) : 0.1 * Math.pow(1 - (u - 0.14) / 0.86, 1.2) + 0.01;
+  return kind === 'hammer' ? body * 0.95 : body * 0.85;
+}
+
+// ---------- input: hover = adults circle; click shark = love; click water = food ----------
+let mx = -1e4, my = -1e4, mouseT = -1e9, food = [], hearts = [];
+let kelp = [], bubbles = [], specks = [];
+window.__mouse = (x, y) => { mx = x; my = y; mouseT = performance.now(); };
+window.__click = (x, y) => {
+  const now = performance.now();
+  let hit = null;
+  for (const sh of [...sharks].reverse()) {                     // nearest-to-glass first
+    for (const p of sh.sp || []) if (Math.hypot(p.x - x, p.y - y) < width(sh.kind, p.u) * sh.len * 1.4 + 8) { hit = sh; break; }
+    if (hit) break;
+  }
+  if (hit) {
+    hit.love++; hit.spinUntil = now + 2200; hit.tagUntil = now + 5000;
+    for (let i = 0; i < 6 + Math.min(10, hit.love); i++) hearts.push({ x: hit.sp[2].x + (Math.random() - .5) * 40, y: hit.sp[2].y, v: 25 + Math.random() * 35, w: Math.random() * 6, life: 2.5 + Math.random() });
+    note(`you loved ${hit.name} ${'♥'.repeat(Math.min(hit.love, 5))}${hit.love > 5 ? ' ×' + hit.love : ''}`);
+  } else {
+    for (let i = 0; i < 5; i++) food.push({ x: x + (Math.random() - .5) * 40, y: y + (Math.random() - .5) * 16, v: 14 + Math.random() * 10, w: Math.random() * 6, born: now });
+    for (let i = 0; i < 6; i++) bubbles.push(bubble(x + (Math.random() - .5) * 30, y));
+    kick(x, y, 90, 300);
+  }
+};
+addEventListener('mousemove', e => window.__mouse(e.clientX, e.clientY));
+addEventListener('mousedown', e => window.__click(e.clientX, e.clientY));
+
+function steer(sh, dt, now, idx) {
+  const h = sh.pts[0];
+  let speed = sh.len * 0.17, turnRate = 0.9;
+  const parent = isBaby(sh) && (byId(sh.parents[0]) || byId(sh.parents[1]));
+  let pellet = null;
+  if (sh.full < 0.95 && food.length) {
+    let best = 1e9; for (const f of food) { const d = Math.hypot(f.x - h.x, f.y - h.y); if (d < best && d < W * 0.7) { best = d; pellet = f; } }
+  }
+  if (now < sh.spinUntil) {                                           // loved: happy swirl
+    sh.tx = h.x + Math.cos(sh.a + 1.2) * 60; sh.ty = h.y + Math.sin(sh.a + 1.2) * 60; speed *= 2; turnRate = 3.2;
+  } else if (pellet) {                                                // dinner
+    sh.tx = pellet.x; sh.ty = pellet.y; speed *= 2.1; turnRate = 2.2;
+    if (Math.hypot(pellet.x - h.x, pellet.y - h.y) < sh.len * 0.12 + 12) {
+      food.splice(food.indexOf(pellet), 1); sh.full = Math.min(1, sh.full + 0.3);
+      if (Math.random() < 0.5) note(`${sh.name} ate${isBaby(sh) ? ' (growing)' : ''}`);
+      if (isBaby(sh)) sh.len = Math.min(sh.adultLen, sh.len + sh.adultLen * 0.03);
+    }
+  } else if (parent) {                                                // babies stay near a parent
+    const pp = parent.pts[Math.round(N * 0.55)], side = (sh.id % 2 ? 1 : -1);
+    sh.tx = pp.x + Math.cos(parent.a + side * 1.9) * parent.len * 0.25; sh.ty = pp.y + Math.sin(parent.a + side * 1.9) * parent.len * 0.25;
+    speed = (parent.speed || parent.len * 0.17) * 1.25; turnRate = 2;
+  } else if (now - mouseT < 5000 && mx > -1e3) {                     // hover: adults circle the cursor
+    const ang = sh.orbit + now * 0.00035 * (idx % 2 ? 1 : -1), r = 60 + sh.len * (0.5 + 0.25 * (idx % 3));
+    sh.tx = mx + Math.cos(ang) * r; sh.ty = my + Math.sin(ang) * r; speed *= 1.5; turnRate = 1.7;
+  } else {                                                            // wander the tank
+    sh.tt -= dt;
+    if (sh.tt <= 0 || Math.hypot(sh.tx - h.x, sh.ty - h.y) < sh.len * 0.3) {
+      sh.tx = -0.05 * W + Math.random() * 1.1 * W; sh.ty = 0.05 * H + Math.random() * 0.8 * H; sh.tt = 6 + Math.random() * 8;
+    }
+  }
+  const want = Math.atan2(sh.ty - h.y, sh.tx - h.x);
+  let d = want - sh.a; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
+  sh.a += Math.max(-turnRate * dt, Math.min(turnRate * dt, d));
+  sh.speed = (sh.speed || speed) + (speed - (sh.speed || speed)) * Math.min(1, dt * 1.5);
+  h.x += Math.cos(sh.a) * sh.speed * dt; h.y += Math.sin(sh.a) * sh.speed * dt;
+  sh.phase += dt * (2.2 + sh.speed / sh.len * 4);
+  const seg = sh.len / (N - 1);
+  for (let i = 1; i < N; i++) {
+    const p = sh.pts[i], q = sh.pts[i - 1], dx = q.x - p.x, dy = q.y - p.y, l = Math.hypot(dx, dy) || 1;
+    p.x = q.x - dx / l * seg; p.y = q.y - dy / l * seg;
+  }
+}
+function spine(sh) {
+  const L = sh.len, pts = sh.pts, n = pts.length;
+  return pts.map((p, i) => {
+    const u = i / (n - 1), q = pts[Math.max(0, i - 1)], r = pts[Math.min(n - 1, i + 1)];
+    let tx = q.x - r.x, ty = q.y - r.y; const l = Math.hypot(tx, ty) || 1; tx /= l; ty /= l;
+    const wave = Math.sin(sh.phase - u * 5.5) * L * 0.045 * Math.pow(u, 1.5);
+    return { x: p.x - ty * wave, y: p.y + tx * wave, tx, ty, nx: -ty, ny: tx, u };
+  });
+}
+function drawShark(g, sh, sp) {
+  const L = sh.len, n = sp.length, dim = 0.45 + 0.55 * sh.depth;
+  const base = sh.kind === 'hammer' ? [138, 150, 178] : [170, 155, 120];
+  const col = k => `rgb(${base[0] * k * dim | 0},${base[1] * k * dim | 0},${base[2] * k * dim | 0})`;
+  const at = u => Math.round(u * (n - 1));
+  const fin = (i, side, out, back, root, k) => {
+    const p = sp[i], w = width(sh.kind, p.u) * L;
+    g.fillStyle = col(k); g.beginPath();
+    g.moveTo(p.x + p.nx * w * side * 0.8, p.y + p.ny * w * side * 0.8);
+    g.lineTo(p.x + p.nx * (w + out * L) * side - p.tx * back * L, p.y + p.ny * (w + out * L) * side - p.ty * back * L);
+    g.lineTo(p.x + p.nx * w * side * 0.8 - p.tx * root * L, p.y + p.ny * w * side * 0.8 - p.ty * root * L);
+    g.closePath(); g.fill();
+  };
+  for (const s of [1, -1]) { fin(at(0.26), s, sh.kind === 'hammer' ? 0.16 : 0.13, 0.14, 0.12, 0.85); fin(at(0.6), s, 0.05, 0.06, 0.06, 0.75); }
+  const e = sp[n - 1], e2 = sp[n - 3];
+  g.strokeStyle = col(0.75); g.lineWidth = L * 0.02; g.lineCap = 'round';
+  g.beginPath(); g.moveTo(e2.x, e2.y); g.lineTo(e.x - e.tx * L * 0.12 + e.nx * L * 0.05, e.y - e.ty * L * 0.12 + e.ny * L * 0.05); g.stroke();
+  g.beginPath(); g.moveTo(e2.x, e2.y); g.lineTo(e.x - e.tx * L * 0.06 - e.nx * L * 0.03, e.y - e.ty * L * 0.06 - e.ny * L * 0.03); g.stroke();
+  g.fillStyle = col(0.95); g.beginPath();
+  sp.forEach((p, i) => { const w = width(sh.kind, p.u) * L; i ? g.lineTo(p.x + p.nx * w, p.y + p.ny * w) : g.moveTo(p.x + p.nx * w, p.y + p.ny * w); });
+  for (let i = n - 1; i >= 0; i--) { const p = sp[i], w = width(sh.kind, p.u) * L; g.lineTo(p.x - p.nx * w, p.y - p.ny * w); }
+  g.closePath(); g.fill();
+  if (sh.kind === 'hammer') {
+    const h = sp[1], hw = L * 0.13, hd = L * 0.035;
+    g.fillStyle = col(0.85); g.beginPath();
+    g.moveTo(h.x + h.nx * hw + h.tx * hd * 0.2, h.y + h.ny * hw + h.ty * hd * 0.2);
+    g.quadraticCurveTo(h.x + h.tx * hd * 1.6, h.y + h.ty * hd * 1.6, h.x - h.nx * hw + h.tx * hd * 0.2, h.y - h.ny * hw + h.ty * hd * 0.2);
+    g.lineTo(h.x - h.nx * hw * 0.9 - h.tx * hd, h.y - h.ny * hw * 0.9 - h.ty * hd);
+    g.lineTo(h.x + h.nx * hw * 0.9 - h.tx * hd, h.y + h.ny * hw * 0.9 - h.ty * hd);
+    g.closePath(); g.fill();
+  }
+  g.strokeStyle = col(1.18); g.lineWidth = L * 0.03;
+  g.beginPath(); for (let i = 1; i < n * 0.8; i++) { const p = sp[i]; i > 1 ? g.lineTo(p.x, p.y) : g.moveTo(p.x, p.y); } g.stroke();
+  const d = sp[at(0.38)];
+  g.strokeStyle = col(1.3); g.lineWidth = L * 0.022;
+  g.beginPath(); g.moveTo(d.x, d.y); g.lineTo(d.x - d.tx * L * 0.1, d.y - d.ty * L * 0.1); g.stroke();
+  for (const s of sh.spots) {
+    const p = sp[at(s.u)], w = width(sh.kind, p.u) * L;
+    g.fillStyle = `rgb(${62 * dim | 0},${55 * dim | 0},${44 * dim | 0})`; g.beginPath();
+    g.arc(p.x + p.nx * w * s.s, p.y + p.ny * w * s.s, w * s.r * 0.5, 0, Math.PI * 2); g.fill();
+  }
+}
+
+// ---------- breeding ----------
+function breed(now) {
+  if (sharks.length >= MAX_SHARKS) return;
+  const adults = sharks.filter(s => !isBaby(s) && s.full > 0.6);
+  for (let i = 0; i < adults.length; i++) for (let j = i + 1; j < adults.length; j++) {
+    const a = adults[i], b = adults[j];
+    if (a.kind !== b.kind || a.parents.includes(b.id) || b.parents.includes(a.id)) continue;
+    if (a.parents.length && a.parents.some(p => b.parents.includes(p))) continue;          // no siblings
+    const loved = Math.min(a.love, b.love);
+    if (Math.random() > 0.25 + 0.1 * loved) continue;
+    const fam = a.family, gen = Math.max(a.gen, b.gen) + 1;
+    a.full -= 0.4; b.full -= 0.4;
+    const kid = makeShark({ name: newName(), kind: a.kind, depth: a.depth, family: fam, gen, parents: [a.id, b.id],
+      len: a.adultLen * 0.28, adultLen: (a.adultLen + b.adultLen) / 2 * (0.9 + Math.random() * 0.2), x: a.pts[10].x, y: a.pts[10].y });
+    const famName = families[fam] ? families[fam].name : '';
+    note(`${kid.name} was born to ${a.name} & ${b.name} · gen ${gen} · ${famName}`);
+    for (let k = 0; k < 8; k++) hearts.push({ x: kid.pts[0].x + (Math.random() - .5) * 30, y: kid.pts[0].y, v: 20 + Math.random() * 30, w: Math.random() * 6, life: 3 });
+    return;
+  }
+}
+
+// ---------- the words: permanent, fine dots that scatter and settle ----------
+const FONT = '"Iowan Old Style", "Hoefler Text", Georgia, serif';
+let dots = [], textBox = { x0: 0, y0: 0, x1: 0, y1: 0 }, looseUntil = 0;
+function buildText() {
+  const off = document.createElement('canvas'), g = off.getContext('2d', { willReadFrequently: true });
+  off.width = Math.round(W * DPR); off.height = Math.round(H * DPR); g.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const fs = Math.round(Math.min(W * 0.085, 150) * 0.7);       // 30% smaller than the version you liked
+  g.font = `400 ${fs}px ${FONT}`;
+  const lines = []; let cur = '';
+  for (const w of QUOTE.split(' ')) { const t = cur ? cur + ' ' + w : w; if (g.measureText(t).width > W * 0.7 && cur) { lines.push(cur); cur = w; } else cur = t; }
+  lines.push(cur);
+  const lh = fs * 1.15, top = H * 0.46 - (lines.length - 1) * lh / 2, maxw = Math.max(...lines.map(l => g.measureText(l).width)), left = (W - maxw) / 2;
+  g.fillStyle = '#000'; g.textBaseline = 'middle';
+  lines.forEach((l, i) => g.fillText(l, left, top + i * lh));
+  const d = g.getImageData(0, 0, off.width, off.height).data;
+  const first = !dots.length; dots = [];
+  for (let y = 0; y < H; y += TS) for (let x = 0; x < W; x += TS) {
+    const k = (Math.round((y + TS / 2) * DPR) * off.width + Math.round((x + TS / 2) * DPR)) * 4;
+    if (d[k + 3] > 110) dots.push({ hx: x, hy: y, x, y, vx: 0, vy: 0, r: Math.random() });
+  }
+  textBox = { x0: left - 40, x1: left + maxw + 40, y0: top - fs, y1: top + (lines.length - 1) * lh + fs };
+  if (first) scatterAll(1);
+}
+function scatterAll(strength) {
+  const cx = W / 2, cy = (textBox.y0 + textBox.y1) / 2;
+  for (const p of dots) {
+    const a = Math.atan2(p.y - cy, p.x - cx) + (Math.random() - .5) * 1.6, v = (180 + Math.random() * 520) * strength;
+    p.vx += Math.cos(a) * v; p.vy += Math.sin(a) * v - 60 * strength;
+  }
+  looseUntil = performance.now() + 2600;
+}
+function kick(x, y, radius, power) {
+  if (x + radius < textBox.x0 || x - radius > textBox.x1 || y + radius < textBox.y0 - 60 || y - radius > textBox.y1 + 60) return;
+  const r2 = radius * radius;
+  for (const p of dots) {
+    const dx = p.x - x, dy = p.y - y, d2 = dx * dx + dy * dy;
+    if (d2 < r2) { const d = Math.sqrt(d2) || 1, f = (1 - d / radius) * power; p.vx += dx / d * f + (Math.random() - .5) * f * 0.4; p.vy += dy / d * f + (Math.random() - .5) * f * 0.4; }
+  }
+}
+function updateDots(dt, now) {
+  const loose = now < looseUntil, k = loose ? 1.2 : 9, damp = Math.pow(loose ? 0.5 : 0.02, dt);
+  for (const sh of sharks) for (let i = 0; i < sh.sp.length; i += 3) { const p = sh.sp[i]; kick(p.x, p.y, width(sh.kind, p.u) * sh.len * 1.6 + 8, 26 * sh.depth); }
+  if (now - mouseT < 1500) kick(mx, my, 60, 18);
+  let moving = false;
+  for (const p of dots) {
+    const ox = p.hx - p.x, oy = p.hy - p.y;
+    if (ox * ox + oy * oy < 0.02 && p.vx * p.vx + p.vy * p.vy < 0.05) { p.x = p.hx; p.y = p.hy; p.vx = p.vy = 0; continue; }
+    moving = true;
+    p.vx += ox * k * dt * (0.6 + p.r); p.vy += oy * k * dt * (0.6 + p.r);
+    p.vx *= damp; p.vy *= damp; p.x += p.vx * dt; p.y += p.vy * dt;
+  }
+  textDirty = textDirty === 'init' || moving || wasMoving;   // one last redraw after the dots settle
+  wasMoving = moving;
+}
+let textDirty = 'init', wasMoving = true, lastBg = -1e9;
+let nextScatter = performance.now() + 30000 + Math.random() * 20000;
+
+// ---------- aquarium dressing ----------
+function spawnKelp() {
+  kelp = Array.from({ length: Math.max(6, Math.round(cols / 14)) }, () => ({ cx: Math.floor(Math.random() * cols), h: 6 + Math.floor(Math.random() * rows * 0.22), seed: Math.random() * 10 }));
+  specks = Array.from({ length: Math.round(cols * rows / 110) }, () => ({ x: Math.random() * W, y: Math.random() * H, v: 2 + Math.random() * 5, a: 0.15 + Math.random() * 0.25 }));
+}
+function bubble(x, y) { return { x, y, v: 30 + Math.random() * 45, w: Math.random() * 6, g: Math.random() < 0.6 ? 1 : (Math.random() < 0.5 ? 0 : 2) }; }
+
+// ---------- start ----------
+resize();
+if (window.__saved && window.__saved.sharks && window.__saved.sharks.length) restore(window.__saved); else foundFamilies();
+addEventListener('resize', () => resize());
+let last = performance.now(), lastDraw = 0, frames = 0, nextBreed = performance.now() + 20000;
+window.__frames = () => frames;
+window.__sharks = sharks;
+window.__state = () => ({ sharks: sharks.length, log: log.slice(-5).map(l => l.line) });
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (now - lastDraw < 1000 / FPS - 2) return;
+  lastDraw = now; frames++;
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+
+  for (const sh of sharks) {                                   // hunger and growth
+    sh.full = Math.max(0, sh.full - dt / 900);
+    if (isBaby(sh)) sh.len = Math.min(sh.adultLen, sh.len + sh.adultLen * dt / GROW_SECONDS);
+  }
+  sharks.forEach((sh, i) => steer(sh, dt, now, i));
+  for (const sh of sharks) sh.sp = spine(sh);
+  if (now > nextBreed) { breed(now); nextBreed = now + 20000; save(); }
+
+  fctx.setTransform(1, 0, 0, 1, 0, 0); fctx.clearRect(0, 0, cols, rows);
+  fctx.setTransform(1 / S, 0, 0, 1 / S, 0, 0);
+  for (const sh of sharks) drawShark(fctx, sh, sh.sp);
+  const fd = fctx.getImageData(0, 0, cols, rows).data;
+
+  if (now > nextScatter) { scatterAll(0.7); nextScatter = now + 30000 + Math.random() * 30000; }
+  updateDots(dt, now);
+
+  if (now - lastBg > 200) {                                    // slow layer: light, sand, kelp (~5 fps)
+    lastBg = now; ctx = bgCtx;
+    ctx.globalAlpha = 1; ctx.clearRect(0, 0, W, H);
+  for (let i = 0; i < 3; i++) {                                 // light from above
+    const x = W * (0.5 + 0.45 * Math.sin(now * 0.00005 * (i + 1) + i * 2)), y = H * (0.3 + 0.2 * Math.cos(now * 0.00007 * (i + 2) + i));
+    const r = Math.min(W, H) * (0.35 + 0.1 * i), gr = ctx.createRadialGradient(x, y, 0, x, y, r);
+    gr.addColorStop(0, 'rgba(70,120,140,0.06)'); gr.addColorStop(1, 'rgba(70,120,140,0)');
+    ctx.fillStyle = gr; ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  const sand = HI('sand'), kelpH = HI('kelp');
+  for (let cx = 0; cx < cols; cx++) {
+    const r = cellRand[cx], y = (rows - 1) * S;
+    tile(sand, r < 0.5 ? 0 : 1, GI[r < 0.3 ? '.' : r < 0.6 ? ',' : r < 0.85 ? ':' : 'o'], cx * S, y, 0.75);
+    if (r < 0.35) tile(sand, 0, GI[r < 0.15 ? '.' : ','], cx * S, y - S, 0.45);
+  }
+  for (const k of kelp) {
+    let prev = 0;
+    for (let j = 0; j < k.h; j++) {
+      const sway = Math.sin(now * 0.0007 + j * 0.32 + k.seed) * j * 0.13 + Math.sin(now * 0.0013 + k.seed) * j * 0.04;
+      const off = Math.round(sway), gl = off > prev ? ')' : off < prev ? '(' : '|'; prev = off;
+      tile(kelpH, Math.min(LEVELS - 1, 1 + (j / k.h * 3 | 0)), GI[gl], (k.cx + off) * S, (rows - 2 - j) * S, 0.8);
+    }
+    if (Math.random() < 0.05) bubbles.push(bubble(k.cx * S + S / 2, (rows - 2 - k.h) * S));
+  }
+    ctx = mainCtx;
+  }
+  ctx.globalAlpha = 1; ctx.clearRect(0, 0, W, H);
+  for (const s of specks) {
+    s.x += s.v * dt; if (s.x > W + S) s.x = -S;
+    ctx.globalAlpha = s.a; ctx.drawImage(bubbleAtlas, 3 * T, 0, T, T, Math.floor(s.x / S) * S, Math.floor(s.y / S) * S, S, S);
+  }
+  // food pellets sink to the sand
+  const gold = HI('gold');
+  food = food.filter(f => now - f.born < 90000);
+  for (const f of food) {
+    f.y = Math.min((rows - 2) * S, f.y + f.v * dt);
+    tile(gold, 4, GI['*'], Math.floor((f.x + Math.sin(now * 0.002 + f.w) * 3) / S) * S, Math.floor(f.y / S) * S, 1);
+  }
+  // sharks
+  const blue = HI('blue'), tan = HI('tan');
+  for (let cy = 0, i = 0; cy < rows; cy++) for (let cx = 0; cx < cols; cx++, i++) {
+    const a = fd[i * 4 + 3] / 255;
+    if (a < 0.3) continue;
+    const r = fd[i * 4], g = fd[i * 4 + 1], b = fd[i * 4 + 2];
+    const lum = (0.3 * r + 0.59 * g + 0.11 * b) / 255;
+    const lvl = Math.max(0, Math.min(LEVELS - 1, Math.floor(lum * a * 7.2)));
+    tile(b > r ? blue : tan, lvl, glyphFor(lvl, i, now), cx * S, cy * S, a < 0.6 ? 0.6 : 1);
+  }
+  // family colour: a few cells along each shark's back carry the family hue
+  for (const sh of sharks) {
+    const fh = HI((families[sh.family] || {}).hue || 'teal');
+    for (let i = 3; i < sh.sp.length * 0.7; i += 5) { const p = sh.sp[i]; tile(fh, 3, GI['%'], Math.floor(p.x / S) * S, Math.floor(p.y / S) * S, 0.9 * (0.5 + 0.5 * sh.depth)); }
+  }
+  if (Math.random() < dt * 0.6) bubbles.push(bubble(Math.random() * W, H - S * 2));
+  bubbles = bubbles.filter(b => b.y > -S);
+  for (const b of bubbles) {
+    b.y -= b.v * dt; const x = b.x + Math.sin(now * 0.003 + b.w) * 4;
+    ctx.globalAlpha = 0.55; ctx.drawImage(bubbleAtlas, b.g * T, 0, T, T, Math.floor(x / S) * S, Math.floor(b.y / S) * S, S, S);
+  }
+  const pink = HI('pink');                                      // hearts
+  hearts = hearts.filter(h => (h.life -= dt) > 0);
+  for (const h of hearts) { h.y -= h.v * dt; tile(pink, 5, GI['♥'], Math.floor((h.x + Math.sin(now * 0.004 + h.w) * 6) / S) * S, Math.floor(h.y / S) * S, Math.min(1, h.life)); }
+
+  if (textDirty) {                                              // the words: own layer, redrawn only while dots move
+    txCtx.clearRect(0, 0, W, H); txCtx.fillStyle = '#ececec';
+    for (const p of dots) txCtx.fillRect(p.x, p.y, TS, TS);
+  }
+
+  ctx.font = '500 11px Menlo, monospace'; ctx.textBaseline = 'middle';
+  for (const sh of sharks) if (now < sh.tagUntil) {             // name tags of loved sharks
+    const p = sh.sp[0], fam = families[sh.family] || {};
+    ctx.globalAlpha = Math.min(1, (sh.tagUntil - now) / 800) * 0.9; ctx.fillStyle = '#f2d9e6';
+    ctx.fillText(`${sh.name} · gen ${sh.gen} · ${fam.name || ''} ${'♥'.repeat(Math.min(sh.love, 5))}`, p.x + 16, p.y - 16);
+  }
+  const recent = log.slice(-5);                                 // lineage log, bottom-left
+  recent.forEach((l, i) => {
+    const age = (now - l.t) / 1000, fresh = age < 8 ? 1 : 0.5;
+    ctx.globalAlpha = (0.25 + 0.12 * (i + 1)) * fresh; ctx.fillStyle = '#cfd6d8';
+    ctx.fillText(l.line, 28, H - 44 - (recent.length - 1 - i) * 15);
+  });
+  ctx.globalAlpha = 1;
+}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
