@@ -1,0 +1,6 @@
+{
+  "families": "SELECT id, name, hue FROM families ORDER BY id",
+  "sharks":   "SELECT * FROM sharks WHERE died_at IS NULL ORDER BY id",
+  "names":    "SELECT id, name FROM sharks",
+  "log":      "SELECT strftime('%H:%M', at) AS t, text FROM (SELECT * FROM events ORDER BY id DESC LIMIT 120) ORDER BY id"
+}

@@ -12,13 +12,13 @@
 <canvas id="bg"></canvas>
 <canvas id="c"></canvas>
 <canvas id="tx"></canvas>
-<script src="quotes.js"></script>
 <script>
 window.__errs = [];
 addEventListener('error', e => window.__errs.push(e.message + ' @' + e.lineno));
 (() => {
 const P = new URLSearchParams(location.search);
-const QUOTE = ((window.QUOTES && window.QUOTES[0]) || { text: 'Evil is whatever distracts.' }).text;
+// The words. Priority: ?quote=... in the URL, then the host's quote.txt (window.__quote), then this default.
+let QUOTE = P.get('quote') || window.__quote || 'Evil is whatever distracts.';
 const S = +P.get('cell') || 10;            // shark / aquarium cell size, css px
 const FPS = +P.get('fps') || 15;           // measured on an M4 MacBook Air (13"): ~32% of one core at 15 fps, ~42% at 20
 const MAX_SHARKS = 24;                     // my guess, not measured: GPU cost grows with shark area; raise it and re-measure
@@ -26,7 +26,17 @@ const GROW_SECONDS = 15 * 60;              // design choice: a baby reaches adul
 const LIFE_HOURS = [6, 12];                // design choice: each shark lives 6-12 hours of real time
 const MIN_ALIVE = 3;                       // design choice: below this, a new family drifts in
 const TIME_SCALE = +P.get('timescale') || 1;   // tests speed up ageing
-const host = window.webkit && window.webkit.messageHandlers;
+// Host bridge. Every host (macOS, Windows, Linux) accepts one message: a JSON transaction of SQL statements.
+// WebKit hosts (macOS WKWebView, Linux WebKitGTK) expose messageHandlers.sql; WebView2 (Windows) exposes chrome.webview.
+// With no host (a plain browser) nothing is saved.
+const HOST = (() => {
+  const wk = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.sql;
+  if (wk) return tx => wk.postMessage(JSON.stringify({ tx }));
+  const cw = window.chrome && window.chrome.webview;
+  if (cw) return tx => cw.postMessage(JSON.stringify({ tx }));
+  return null;
+})();
+const TANK = window.__tank || null;    // rows the host loaded with web/load.json at startup
 const wall = () => Date.now() * TIME_SCALE;
 
 // ---------- canvases: slow background, main, and the words ----------
@@ -97,10 +107,13 @@ function drawWords() {
   const off = document.createElement('canvas'), g = off.getContext('2d', { willReadFrequently: true });
   off.width = Math.round(W * DPR); off.height = Math.round(H * DPR); g.setTransform(DPR, 0, 0, DPR, 0, 0);
   const fs = Math.round(Math.min(W * 0.085, 150) * 0.7);
-  g.font = `400 ${fs}px "Iowan Old Style", "Hoefler Text", Georgia, serif`;
-  const lines = []; let cur = '';
-  for (const w of QUOTE.split(' ')) { const t = cur ? cur + ' ' + w : w; if (g.measureText(t).width > W * 0.7 && cur) { lines.push(cur); cur = w; } else cur = t; }
-  lines.push(cur);
+  g.font = `400 ${fs}px "Iowan Old Style", "Hoefler Text", "Palatino Linotype", Georgia, "DejaVu Serif", serif`;
+  const lines = [];
+  for (const para of QUOTE.split('\n')) {                    // explicit line breaks in quote.txt are kept
+    let cur = '';
+    for (const w of para.split(' ')) { const t = cur ? cur + ' ' + w : w; if (g.measureText(t).width > W * 0.7 && cur) { lines.push(cur); cur = w; } else cur = t; }
+    lines.push(cur);
+  }
   const lh = fs * 1.15, top = H * 0.46 - (lines.length - 1) * lh / 2, maxw = Math.max(...lines.map(l => g.measureText(l).width)), left = (W - maxw) / 2;
   g.fillStyle = '#000'; g.textBaseline = 'middle';
   lines.forEach((l, i) => g.fillText(l, left, top + i * lh));
@@ -150,7 +163,7 @@ function paintWords() {
 
 // ---------- families, names, events (stored by the host in SQLite) ----------
 const SYL = ['ka', 'mi', 'ro', 've', 'lu', 'sa', 'ti', 'no', 'be', 'ra', 'do', 'ze', 'fi', 'ol', 'an', 'ish', 'um', 'pe', 'yo', 'ki'];
-const usedNames = new Set((window.__saved && window.__saved.names) || []);   // every name ever given, dead sharks included
+const usedNames = new Set(((TANK && TANK.names) || []).map(r => r.name));   // every name ever given, dead sharks included
 const newName = () => {
   for (let i = 0; i < 200; i++) {
     const parts = 2 + (i > 100 ? 1 : 0), n = Array.from({ length: parts }, () => SYL[Math.random() * SYL.length | 0]).join('');
@@ -164,16 +177,24 @@ let families = [], log = [], nextId = 1;
 const clock = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 function event(kind, text, shark) {
   log.push({ t: performance.now(), line: `${clock()}  ${text}` }); if (log.length > 300) log.shift();
-  if (host && host.event) host.event.postMessage(JSON.stringify({ kind, text, shark: shark ? shark.id : null }));
+  if (HOST) HOST([['INSERT INTO events (kind, shark_id, text) VALUES (?, (SELECT id FROM sharks WHERE id = ?), ?)', [kind, shark ? shark.id : null, text]]]);
 }
 let lastSave = 0;
 function save(force) {
-  if (!host || !host.save) return;
+  if (!HOST) return;
   const now = performance.now(); if (!force && now - lastSave < 5000) return; lastSave = now;
-  host.save.postMessage(JSON.stringify({ families,
-    sharks: sharks.map(s => ({ id: s.id, name: s.name, kind: s.kind, depth: s.depth, family: s.family, gen: s.gen, parents: s.parents,
-      born: Math.round(s.born / TIME_SCALE), lifespan: s.lifespan, diedAt: s.diedAt || null,
-      len: s.len, adultLen: s.adultLen, love: s.love, full: s.full })) }));
+  const tx = families.map(f => ['INSERT INTO families (id, name, hue) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, hue = excluded.hue', [f.id, f.name, f.hue]]);
+  for (const s of [...sharks].sort((a, b) => a.id - b.id)) {      // parents before children (foreign keys)
+    const born = Math.round(s.born / TIME_SCALE);
+    tx.push([`INSERT INTO sharks (id, name, species, family_id, generation, parent_a_id, parent_b_id, born_at, born_ms, lifespan_hours,
+                                  died_at, length, adult_length, depth, fullness, love)
+              VALUES (?, ?, ?, ?, ?, ?, ?, datetime(? / 1000, 'unixepoch', 'localtime'), ?, ?, ?, ?, ?, ?, ?, ?)
+              ON CONFLICT(id) DO UPDATE SET length = excluded.length, fullness = excluded.fullness, love = excluded.love,
+                died_at = coalesce(sharks.died_at, excluded.died_at)`,
+      [s.id, s.name, s.kind === 'hammer' ? 'hammerhead' : 'leopard', s.family, s.gen, s.parents[0] ?? null, s.parents[1] ?? null,
+       born, born, s.lifespan / 3600000, s.diedAt || null, s.len, s.adultLen, s.depth, s.full, s.love]]);
+  }
+  HOST(tx);
 }
 const fmtAge = ms => { const m = Math.round(ms / 60000); return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`; };
 const localStamp = () => { const d = new Date(), z = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`; };
@@ -212,9 +233,13 @@ function openTank() {
   save(true);
   event('opened', `the tank opens: ${families.map(f => f.name).join(', ')}`);
 }
-function restore(saved) {
-  families = saved.families; log = (saved.log || []).map(line => ({ t: -1e9, line })); nextId = saved.nextId || 1;
-  for (const s of saved.sharks) makeShark(Object.assign({}, s, { born: s.born * TIME_SCALE, x: undefined, y: undefined }));
+function restore(t) {                                          // rows from web/load.json -> live sharks
+  families = t.families.map(f => ({ id: f.id, name: f.name, hue: f.hue }));
+  log = (t.log || []).map(r => ({ t: -1e9, line: `${r.t}  ${r.text}` }));
+  nextId = Math.max(1, ...(t.names || []).map(r => r.id + 1));
+  for (const r of t.sharks) makeShark({ id: r.id, name: r.name, kind: r.species === 'hammerhead' ? 'hammer' : 'leopard', family: r.family_id,
+    gen: r.generation, parents: [r.parent_a_id, r.parent_b_id].filter(x => x != null), born: r.born_ms * TIME_SCALE,
+    lifespan: r.lifespan_hours * 3600000, len: r.length, adultLen: r.adult_length, depth: r.depth, full: r.fullness, love: r.love });
   nextId = Math.max(nextId, ...sharks.map(s => s.id + 1));
 }
 function width(kind, u) {
@@ -411,7 +436,8 @@ function bubble(x, y) { return { x, y, v: 30 + Math.random() * 45, w: Math.rando
 
 // ---------- start ----------
 resize();
-if (window.__saved && window.__saved.sharks && window.__saved.sharks.length) restore(window.__saved); else openTank();
+if (TANK && TANK.sharks && TANK.sharks.length) restore(TANK); else openTank();
+window.__setQuote = text => { text = String(text || '').trim(); if (text && text !== QUOTE) { QUOTE = text; drawWords(); } };
 addEventListener('resize', () => resize());
 let last = performance.now(), lastDraw = 0, frames = 0, nextBreed = performance.now() + 20000, nextCensus = performance.now() + 5000;
 window.__frames = () => frames;
