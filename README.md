@@ -54,10 +54,10 @@ Uninstalling keeps your tank and your quote.
 | Platform | How it sits behind the icons | Tested |
 | --- | --- | --- |
 | macOS | desktop-level window | ✅ daily use (M4 MacBook Air) + CI |
-| Windows 11 24H2+ | child of Progman below the icon view | CI build and run; not yet on a real 24H2 PC |
-| Windows 10 / 11 before 24H2 | child of the WorkerW behind the icons | CI build and run |
+| Windows 11 24H2+ | child of Progman below the icon view | ✅ CI desktop (build 26100, [screenshot](docs/ci/windows-desktop-attach.png)); not yet on a home PC |
+| Windows 10 / 11 before 24H2 | child of the WorkerW behind the icons | not yet tested |
 | KDE Plasma, Sway, Hyprland and other wlroots desktops (Wayland) | layer-shell background layer | not yet on real hardware |
-| X11 desktops (Xfce, Cinnamon, MATE, GNOME on X11 …) | desktop-type window | ✅ Docker (Xvfb) + CI |
+| X11 desktops (Xfce, Cinnamon, MATE, GNOME on X11 …) | desktop-type window | ✅ Docker (Xvfb) + CI ([screenshot](docs/ci/linux.png)) |
 | GNOME on Wayland | desktop-type window through XWayland | not verified |
 
 If you try it somewhere not marked ✅, please open an issue with what you saw and the log file (paths below). The details per OS are in [docs/RESEARCH.md](docs/RESEARCH.md).

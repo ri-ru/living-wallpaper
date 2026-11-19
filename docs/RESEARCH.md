@@ -72,7 +72,9 @@ Sources: [VibingWrapper PR #7](https://github.com/youllook/VibingWrapper/pull/7)
 
 **Existing tools.** [Lively Wallpaper](https://github.com/rocksdanister/lively) (free, open source) and Wallpaper Engine (paid) both support web wallpapers. Lively is the best reference implementation of the WorkerW technique.
 
-**Testing.** No Windows desktop was available while this was written. CI on `windows-latest` builds the host and runs it twice:
+**Verified on a CI desktop ✅.** On a GitHub `windows-latest` runner (Windows Server 2025, build 26100, the same base as Windows 11 24H2), the host logged `Progman child below SHELLDLL_DefView (Windows 11 24H2+ layout)`. A full-screen capture shows the aquarium grid under the desktop icons ([screenshot](ci/windows-desktop-attach.png)). WebView2 renders correctly inside the layered child; it does not show black.
+
+**Testing.** No Windows PC was available while this was written. CI on `windows-latest` builds the host and runs it twice:
 
 - in a normal window, with snapshots and a database check
 - attached to the desktop, with a full-screen screenshot and a log of the attach mode used
@@ -129,6 +131,6 @@ Linux has no single desktop, so there are two techniques:
 
 ## 7. Open questions
 
-- Does the 24H2 layered-child attach work with WebView2 on real hardware, or does WebView2 need `--no-layered`?
+- ~~Does the 24H2 layered-child attach work with WebView2?~~ Yes on a CI desktop (build 26100). Still to check: a home Windows 11 PC, and the classic pre-24H2 layout on Windows 10.
 - Does the XWayland desktop-window fallback stay below normal windows on GNOME 47+?
 - Multi-monitor: each monitor gets its own window. Only the first keeps the saved tank; the others show fresh tanks that are never saved. A shared tank across monitors would need one canvas over the whole virtual screen.
