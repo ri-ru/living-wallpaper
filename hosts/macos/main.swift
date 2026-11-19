@@ -128,6 +128,18 @@ final class Host: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         // Sleep and wake: save before sleeping; after waking (or unlocking, or switching users back) the web
         // content process may have been suspended or killed, so rebuild the windows from the saved tank.
         let ws = NSWorkspace.shared.notificationCenter
+        // Lock screen: macOS shows the desktop picture there, and ours is hidden behind the aquarium anyway,
+        // so keep it set to the page's words-only picture (every 5 minutes, and at lock, screen sleep and sleep).
+        if opts.lockscreen && opts.snapDir == nil && !opts.windowed {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in self?.updateLockScreen() }
+            Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in self?.updateLockScreen() }
+            for n in [NSWorkspace.screensDidSleepNotification, NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
+                ws.addObserver(forName: n, object: nil, queue: .main) { [weak self] _ in self?.updateLockScreen() }
+            }
+            for n in ["com.apple.screenIsLocked", "com.apple.screensaver.didstart"] {
+                DistributedNotificationCenter.default().addObserver(forName: Notification.Name(n), object: nil, queue: .main) { [weak self] _ in self?.updateLockScreen() }
+            }
+        }
         ws.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
             self?.windows.forEach { $0.1.evaluateJavaScript("window.__save && window.__save()", completionHandler: nil) } }
         for n in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
@@ -222,6 +234,24 @@ final class Host: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         }
     }
 
+    // ---- lock screen ----
+    var lockFlip = false
+    func updateLockScreen() {
+        guard let v = windows.first?.1 else { return }
+        v.evaluateJavaScript("window.__quoteImage && window.__quoteImage()") { [weak self] r, _ in
+            guard let self = self, let dataURL = r as? String, let comma = dataURL.firstIndex(of: ","),
+                  let png = Data(base64Encoded: String(dataURL[dataURL.index(after: comma)...])) else { return }
+            saveOriginalWallpapers()
+            // Alternate between two file names: macOS caches the picture by URL and would not notice a rewrite.
+            self.lockFlip.toggle()
+            let url = support.appendingPathComponent("lockscreen-\(self.lockFlip ? "a" : "b").png")
+            do {
+                try png.write(to: url, options: .atomic)
+                for screen in NSScreen.screens { try NSWorkspace.shared.setDesktopImageURL(url, for: screen, options: [:]) }
+            } catch { log("lock screen update failed: \(error)") }
+        }
+    }
+
     func webView(_ w: WKWebView, didFinish n: WKNavigation!) { log("page loaded") }
     func webViewWebContentProcessDidTerminate(_ w: WKWebView) { log("web content process ended: reloading"); w.reload() }
     func webView(_ w: WKWebView, didFail n: WKNavigation!, withError e: Error) { log("fail \(e)") }
@@ -244,10 +274,31 @@ final class Host: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     }
 }
 
+// ---------- the wallpaper picture we replace, so uninstall can put it back ----------
+let originalFile = support.appendingPathComponent("original-wallpaper.json")
+func saveOriginalWallpapers() {
+    if FileManager.default.fileExists(atPath: originalFile.path) { return }
+    var map: [String: String] = [:]
+    for s in NSScreen.screens {
+        if let u = NSWorkspace.shared.desktopImageURL(for: s), !u.lastPathComponent.hasPrefix("lockscreen-") { map[s.localizedName] = u.path }
+    }
+    if let d = try? JSONSerialization.data(withJSONObject: map) { try? d.write(to: originalFile) }
+}
+func restoreOriginalWallpapers() {
+    guard let d = try? Data(contentsOf: originalFile), let map = try? JSONSerialization.jsonObject(with: d) as? [String: String] else {
+        log("no saved wallpaper to restore"); return
+    }
+    for s in NSScreen.screens {
+        if let p = map[s.localizedName] ?? map.values.first { try? NSWorkspace.shared.setDesktopImageURL(URL(fileURLWithPath: p), for: s, options: [:]) }
+    }
+    try? FileManager.default.removeItem(at: originalFile)
+    log("wallpaper restored")
+}
+
 // ---------- options ----------
 struct Options {
     var page: URL, db: String, query: String, quote: String?, quoteFile: URL
-    var snapDir: String?, snapTimes: [Double], evals: [(Double, String)], windowed: Bool
+    var snapDir: String?, snapTimes: [Double], evals: [(Double, String)], windowed: Bool, lockscreen: Bool
 }
 var args = Array(CommandLine.arguments.dropFirst())
 func take(_ flag: String) -> String? {
@@ -272,7 +323,8 @@ let opts = Options(page: page,
                    quoteFile: take("--quote-file").map { URL(fileURLWithPath: $0) } ?? support.appendingPathComponent("quote.txt"),
                    snapDir: take("--snapshot"),
                    snapTimes: (take("--at") ?? "3").split(separator: ",").compactMap { Double($0) },
-                   evals: evals, windowed: flag("--windowed"))
+                   evals: evals, windowed: flag("--windowed"), lockscreen: !flag("--no-lockscreen"))
+if flag("--restore-wallpaper") { restoreOriginalWallpapers(); exit(0) }   // used by uninstall
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)

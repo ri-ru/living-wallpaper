@@ -107,7 +107,17 @@ Linux has no single desktop, so there are two techniques:
 - [linux-wallpaperengine](https://github.com/Almamu/linux-wallpaperengine) runs Wallpaper Engine scenes.
 - KDE Plasma has wallpaper plugins that show web pages.
 
-## 5. Rendering an ASCII mosaic cheaply
+## 5. Lock screens
+
+None of the three systems lets an app draw a live page on the lock screen. What each host does instead:
+
+- **macOS ✅.** Since Sonoma, the lock screen shows the desktop picture. The host already covers that picture with its own window, so it can call `NSWorkspace.setDesktopImageURL` freely. It alternates between two file names, because macOS caches the picture by URL.
+- **Windows 📚.** `LockScreen.SetImageFileAsync` from `Windows.System.UserProfile` works from a desktop app when the project targets `net8.0-windows10.0.19041.0`. Managed or education editions may block it with a policy.
+- **GNOME 📚.** The `picture-uri` key in `org.gnome.desktop.screensaver`. There is no shared way across other Linux lock screens.
+
+The page renders the picture itself with `window.__quoteImage()`, which returns a PNG data URL with only the words. So the picture doesn't depend on the window being visible.
+
+## 6. Rendering an ASCII mosaic cheaply
 
 - **Rasterize small.** Draw each shark as vector paths into a canvas with one pixel per grid cell (about 147×96). Read it back once per frame with `getImageData` (`willReadFrequently: true`). Then stamp one pre-rendered glyph tile per lit cell with `drawImage` from an atlas. The tile is chosen by brightness × hue × glyph.
 - **Layers.** Three stacked canvases:
@@ -123,13 +133,13 @@ Linux has no single desktop, so there are two techniques:
 
   Most of the cost is in the GPU process and grows with the number of tiles drawn. A WebGL instanced renderer would be the next step. It has not been tried.
 
-## 6. Persistence design
+## 7. Persistence design
 
 - The page owns all the SQL: `web/schema.sql`, `web/load.json`, and the statements it sends. Every host is a dumb "run this transaction" pipe. This keeps three hosts in three languages from drifting apart.
 - Foreign keys are on. Sharks are saved parents first. Events look up their shark with `(SELECT id FROM sharks WHERE id = ?)`, so an event for a shark that isn't saved yet stores `NULL` instead of failing the whole transaction.
 - Names are unique across the whole family tree, dead sharks included. The tree uses IDs, but people read names.
 
-## 7. Open questions
+## 8. Open questions
 
 - ~~Does the 24H2 layered-child attach work with WebView2?~~ Yes on a CI desktop (build 26100). Still to check: a home Windows 11 PC, and the classic pre-24H2 layout on Windows 10.
 - Does the XWayland desktop-window fallback stay below normal windows on GNOME 47+?

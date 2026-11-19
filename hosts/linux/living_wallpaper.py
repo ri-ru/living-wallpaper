@@ -15,6 +15,7 @@ Usage: living_wallpaper.py [--page PATH] [--db PATH] [--query fps=12] [--quote T
                            [--quote-file PATH] [--windowed] [--snapshot DIR --at 2,6] [--eval SEC:JS]
 """
 import argparse
+import base64
 import json
 import os
 import sqlite3
@@ -42,7 +43,7 @@ for v in ("4.1", "4.0"):
         break
     except ValueError:
         continue
-from gi.repository import Gdk, GLib, Gtk, WebKit2  # noqa: E402
+from gi.repository import Gdk, Gio, GLib, Gtk, WebKit2  # noqa: E402
 
 try:
     gi.require_version("GtkLayerShell", "0.1")
@@ -98,6 +99,10 @@ class Host:
         GLib.timeout_add_seconds(2, self.watch_quote)
         if o.snapshot:
             self.schedule_snapshots()
+        elif o.lockscreen and not o.windowed:
+            self.lock_flip = False
+            GLib.timeout_add_seconds(10, self.update_lockscreen)
+            GLib.timeout_add_seconds(300, self.update_lockscreen)
         for sec, js in o.evals:
             GLib.timeout_add(int(sec * 1000), lambda js=js: [self.run_js(v, js) for v in self.views] and False)
         log(f"page={o.page} db={o.db} quote={o.quote_file}")
@@ -192,6 +197,29 @@ class Host:
         except Exception as e:  # never let a bad message kill the wallpaper
             log("bad message:", e)
 
+    # ---- lock screen: GNOME shows org.gnome.desktop.screensaver picture-uri; keep it set to a recent snapshot ----
+    def update_lockscreen(self):
+        settings = lock_settings()
+        if settings is None:
+            log("lock screen: only GNOME's picture setting is supported; skipping")
+            return False
+        self.lock_flip = not self.lock_flip   # alternate names so the lock screen notices the change
+        path = os.path.join(os.path.dirname(self.o.quote_file), f"lockscreen-{'a' if self.lock_flip else 'b'}.png")
+
+        def done(v, res, *_):
+            try:
+                r = v.evaluate_javascript_finish(res) if hasattr(v, "evaluate_javascript_finish") else v.run_javascript_finish(res).get_js_value()
+                data_url = r.to_string()
+                with open(path, "wb") as f:
+                    f.write(base64.b64decode(data_url.split(",", 1)[1]))
+                save_original_lockscreen(settings)
+                settings.set_string("picture-uri", "file://" + path)
+            except Exception as e:
+                log("lock screen update failed:", e)
+
+        self.run_js(self.views[0], "window.__quoteImage && window.__quoteImage()", done)   # the words only, no sharks
+        return True
+
     @staticmethod
     def run_js(view, js, cb=None):
         if hasattr(view, "evaluate_javascript"):        # WebKitGTK >= 2.40
@@ -228,6 +256,34 @@ class Host:
         return False
 
 
+def lock_settings():
+    src = Gio.SettingsSchemaSource.get_default()
+    if src is None or src.lookup("org.gnome.desktop.screensaver", True) is None:
+        return None
+    return Gio.Settings.new("org.gnome.desktop.screensaver")
+
+
+ORIGINAL_LOCK = os.path.join(XDG_CONFIG, "living-wallpaper", "original-lockscreen-uri.txt")
+
+
+def save_original_lockscreen(settings):
+    if not os.path.exists(ORIGINAL_LOCK):
+        old = settings.get_string("picture-uri")
+        if "living-wallpaper" not in old:
+            with open(ORIGINAL_LOCK, "w") as f:
+                f.write(old)
+
+
+def restore_lockscreen():
+    settings = lock_settings()
+    if settings is not None and os.path.exists(ORIGINAL_LOCK):
+        with open(ORIGINAL_LOCK) as f:
+            settings.set_string("picture-uri", f.read().strip())
+        Gio.Settings.sync()
+        os.remove(ORIGINAL_LOCK)
+        log("lock screen restored")
+
+
 def main():
     p = argparse.ArgumentParser(description="Living Wallpaper (Linux host)")
     p.add_argument("--page", default=os.path.join(HERE, "..", "..", "web", "index.html"))
@@ -236,10 +292,15 @@ def main():
     p.add_argument("--quote")
     p.add_argument("--quote-file", default=os.path.join(XDG_CONFIG, "living-wallpaper", "quote.txt"))
     p.add_argument("--windowed", action="store_true", help="a normal window, for trying it out")
+    p.add_argument("--no-lockscreen", dest="lockscreen", action="store_false", help="leave the lock screen picture alone")
+    p.add_argument("--restore-lockscreen", action="store_true", help="put back the lock screen picture and quit (uninstall)")
     p.add_argument("--snapshot", help="test mode: write PNGs to this folder, then quit")
     p.add_argument("--at", default="3", help="snapshot times in seconds, comma separated")
     p.add_argument("--eval", action="append", default=[], help="SEC:JS, run JS after SEC seconds")
     o = p.parse_args()
+    if o.restore_lockscreen:
+        restore_lockscreen()
+        return
     o.page = os.path.realpath(o.page)
     o.at = [float(x) for x in o.at.split(",")]
     o.evals = [(float(e.split(":", 1)[0]), e.split(":", 1)[1]) for e in o.eval]

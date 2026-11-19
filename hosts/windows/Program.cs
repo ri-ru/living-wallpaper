@@ -25,6 +25,7 @@ static class Program
         Log.Path = o.LogFile;
         using var single = new Mutex(true, o.Snapshot == null && !o.Windowed ? "LivingWallpaper.Desktop" : Guid.NewGuid().ToString(), out bool first);
         if (!first) { Log.Write("already running"); return; }
+        if (o.RestoreLock) { LockScreenImage.Restore().GetAwaiter().GetResult(); return; }   // used by uninstall
         ApplicationConfiguration.Initialize();
         var host = new Host(o);
         Application.ApplicationExit += (_, _) => host.Shutdown();
@@ -48,7 +49,7 @@ class Options
     public string Page, Db, Query = "", Quote, QuoteFile, Snapshot, LogFile;
     public double[] At = { 3 };
     public List<(double, string)> Evals = new();
-    public bool Windowed, Layered = true;
+    public bool Windowed, Layered = true, Lockscreen = true, RestoreLock;
     public static readonly string Data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "LivingWallpaper");
 
     public static Options Parse(string[] a)
@@ -75,6 +76,8 @@ class Options
                 case "--log": o.LogFile = Path.GetFullPath(Next()); break;
                 case "--windowed": o.Windowed = true; break;
                 case "--no-layered": o.Layered = false; break;
+                case "--no-lockscreen": o.Lockscreen = false; break;
+                case "--restore-lockscreen": o.RestoreLock = true; break;
             }
         }
         // Default page: the nearest web\index.html above the exe (the repo), so edits to web\ need no rebuild.
@@ -295,6 +298,7 @@ class Host
         // Sleep and wake: save before suspend; reload after resume (the GPU or web process may have been reset).
         Microsoft.Win32.SystemEvents.PowerModeChanged += (_, e) =>
         {
+            if (e.Mode == Microsoft.Win32.PowerModes.Suspend && o.Lockscreen && !o.Windowed) _ = UpdateLockScreen();
             if (e.Mode == Microsoft.Win32.PowerModes.Suspend)
                 foreach (var w in wins) if (w.view.CoreWebView2 != null) _ = w.view.ExecuteScriptAsync("window.__save && window.__save()");
             if (e.Mode == Microsoft.Win32.PowerModes.Resume)
@@ -308,6 +312,32 @@ class Host
         }
         foreach (var (sec, js) in o.Evals) After(sec, () => wins.ForEach(w => _ = w.view.ExecuteScriptAsync(js)));
         if (o.Snapshot != null) ScheduleSnapshots();
+        // Lock screen: Windows cannot run a live page there, so keep its picture set to the page's words-only picture.
+        if (o.Lockscreen && !o.Windowed && o.Snapshot == null)
+        {
+            After(10, () => _ = UpdateLockScreen());
+            Every(300_000, () => _ = UpdateLockScreen());
+            Microsoft.Win32.SystemEvents.SessionSwitch += (_, e) => { if (e.Reason == Microsoft.Win32.SessionSwitchReason.SessionLock) _ = UpdateLockScreen(); };
+        }
+    }
+
+    bool lockFlip;
+    async Task UpdateLockScreen()
+    {
+        var v = wins.Count > 0 ? wins[0].view : null;
+        if (v?.CoreWebView2 == null) return;
+        lockFlip = !lockFlip;   // alternate names: the lock screen caches by path
+        var path = Path.Combine(Options.Data, lockFlip ? "lockscreen-a.png" : "lockscreen-b.png");
+        try
+        {
+            // ExecuteScriptAsync returns JSON, so the data URL arrives as a quoted string.
+            var json = await v.ExecuteScriptAsync("window.__quoteImage && window.__quoteImage()");
+            var dataUrl = JsonSerializer.Deserialize<string>(json);
+            if (string.IsNullOrEmpty(dataUrl)) return;
+            File.WriteAllBytes(path, Convert.FromBase64String(dataUrl[(dataUrl.IndexOf(',') + 1)..]));
+            await LockScreenImage.Set(path);
+        }
+        catch (Exception e) { Log.Write("lock screen update failed: " + e.Message); }
     }
 
     async Task Open(Screen screen, bool persist)
@@ -421,6 +451,36 @@ class Host
     {
         if (hook != IntPtr.Zero) W.UnhookWindowsHookEx(hook);
         if (!o.Windowed) Desktop.Repaint();
+    }
+}
+
+// ---------- lock screen picture (WinRT); the first time, the current picture is saved so uninstall can restore it ----------
+static class LockScreenImage
+{
+    static readonly string Original = Path.Combine(Options.Data, "original-lockscreen.img");
+
+    public static async Task Set(string png)
+    {
+        if (!File.Exists(Original))
+        {
+            try
+            {
+                using var src = Windows.System.UserProfile.LockScreen.GetImageStream().AsStreamForRead();
+                using var dst = File.Create(Original);
+                await src.CopyToAsync(dst);
+            }
+            catch (Exception e) { Log.Write("could not save the current lock screen: " + e.Message); }
+        }
+        var file = await Windows.Storage.StorageFile.GetFileFromPathAsync(png);
+        await Windows.System.UserProfile.LockScreen.SetImageFileAsync(file);
+    }
+
+    public static async Task Restore()
+    {
+        if (!File.Exists(Original)) return;
+        var file = await Windows.Storage.StorageFile.GetFileFromPathAsync(Original);
+        await Windows.System.UserProfile.LockScreen.SetImageFileAsync(file);
+        File.Delete(Original);
     }
 }
 

@@ -437,7 +437,26 @@ function bubble(x, y) { return { x, y, v: 30 + Math.random() * 45, w: Math.rando
 // ---------- start ----------
 resize();
 if (TANK && TANK.sharks && TANK.sharks.length) restore(TANK); else openTank();
-window.__save = () => save(true);   // hosts call this before the computer sleeps
+window.__save = () => save(true);
+// The lock-screen picture: only the words, crisp, on the tank's dark background (no sharks). Hosts call this
+// and save the returned PNG as the system lock-screen image.
+window.__quoteImage = () => {
+  const c = document.createElement('canvas'), g = c.getContext('2d');
+  c.width = Math.round(W * DPR); c.height = Math.round(H * DPR); g.setTransform(DPR, 0, 0, DPR, 0, 0);
+  g.fillStyle = '#050607'; g.fillRect(0, 0, W, H);
+  const fs = Math.round(Math.min(W * 0.085, 150) * 0.7);
+  g.font = `400 ${fs}px "Iowan Old Style", "Hoefler Text", "Palatino Linotype", Georgia, "DejaVu Serif", serif`;
+  const lines = [];
+  for (const para of QUOTE.split('\n')) {
+    let cur = '';
+    for (const w of para.split(' ')) { const t = cur ? cur + ' ' + w : w; if (g.measureText(t).width > W * 0.7 && cur) { lines.push(cur); cur = w; } else cur = t; }
+    lines.push(cur);
+  }
+  const lh = fs * 1.15, top = H * 0.46 - (lines.length - 1) * lh / 2, maxw = Math.max(...lines.map(l => g.measureText(l).width)), left = (W - maxw) / 2;
+  g.fillStyle = '#ececec'; g.textBaseline = 'middle';
+  lines.forEach((l, i) => g.fillText(l, left, top + i * lh));
+  return c.toDataURL('image/png');
+};   // hosts call this before the computer sleeps
 window.__setQuote = text => { text = String(text || '').trim(); if (text && text !== QUOTE) { QUOTE = text; drawWords(); } };
 addEventListener('resize', () => resize());
 let last = performance.now(), lastDraw = 0, frames = 0, nextBreed = performance.now() + 20000, nextCensus = performance.now() + 5000;

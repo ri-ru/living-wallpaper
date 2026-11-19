@@ -8,7 +8,7 @@ The scene in `web/` is one HTML file. It does not know which operating system it
 | [`hosts/windows/Program.cs`](../hosts/windows/Program.cs) | C# (.NET 8) | WebView2 (Chromium) | ~400 |
 | [`hosts/linux/living_wallpaper.py`](../hosts/linux/living_wallpaper.py) | Python 3 | WebKitGTK | ~250 |
 
-To port the scene to another platform, or to put a different page behind your desktop, write a host that does the six things below. The host never contains scene logic or SQL of its own.
+To port the scene to another platform, or to put a different page behind your desktop, write a host that does the six things below (a seventh, the lock screen, is optional). The host never contains scene logic or SQL of its own.
 
 ## 1. Show the page behind the desktop
 
@@ -65,6 +65,10 @@ window.__click(x, y)   // left button pressed
 - Before the computer sleeps, call `window.__save()`.
 - After it wakes, the screen unlocks, or the user switches back, reload the page or rebuild the windows. The page restores itself from SQLite.
 - If the web content process dies (`webViewWebContentProcessDidTerminate`, `ProcessFailed`, `web-process-terminated`), reload it.
+
+## 7. Optional: the lock screen
+
+`window.__quoteImage()` returns a PNG data URL with only the words. A host can save it as the system lock-screen picture now and then: at lock, at sleep, and every few minutes. Before the first change, save the current picture so that uninstalling can restore it.
 
 ## Files and folders
 

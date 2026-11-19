@@ -74,6 +74,19 @@ The words come from a plain text file that is created on first run:
 
 Save the file and the wallpaper shows the new words within 2 seconds. You don't need to restart. Line breaks are kept, so put each line where you want it.
 
+## Lock screen
+
+A lock screen can't run a live page on any of the three systems. So the wallpaper keeps the lock-screen picture set to **just the words**: crisp, on the tank's dark background, with no sharks. It updates the picture every 5 minutes, when you lock, and when the screen or the computer goes to sleep. If you change `quote.txt`, the lock screen follows.
+
+| OS | How | Status |
+| --- | --- | --- |
+| macOS | The lock screen shows the desktop picture, which is hidden behind the aquarium, so the host sets the desktop picture. | ✅ |
+| Windows | `Windows.System.UserProfile.LockScreen.SetImageFileAsync` | builds in CI; not yet tried on a PC (some editions or policies block it; see the log) |
+| Linux (GNOME) | the `org.gnome.desktop.screensaver picture-uri` setting | written; not yet tried on a GNOME desktop |
+| Linux (other) | no common way; skipped | — |
+
+Your previous picture is saved the first time, and uninstalling puts it back. Run the host with `--no-lockscreen` to leave the lock screen alone.
+
 ## Make it yours
 
 | Change | Where |
