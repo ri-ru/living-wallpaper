@@ -105,7 +105,7 @@ Your previous picture is saved the first time, and uninstalling puts it back. Ru
 | How often whales visit | `WHALE_GAP_MIN` in `web/index.html` |
 | Sinking and decay | `SINK_SPEED`, `REST_MS`, `DECAY_MS` in `web/index.html` |
 | Colours | `HUES`, `FAMILY_HUES` in `web/index.html` |
-| Shark shape | `width()` and `drawShark()` in `web/index.html` |
+| Body shapes | `width()`, `drawSwimmer()` (sharks, mantas, whales) and `drawJelly()` in `web/index.html` |
 | A completely different scene | Replace `web/index.html`. The hosts show any page that follows [the host contract](docs/HOST_PROTOCOL.md). |
 
 Changes to `web/` show up after a restart:
