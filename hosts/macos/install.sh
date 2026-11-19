@@ -29,7 +29,7 @@ cat > "$APP/Contents/Info.plist" <<PL
 </dict></plist>
 PL
 
-ARGS="<string>$APP/Contents/MacOS/LivingWallpaper</string>"
+ARGS="<string>$APP/Contents/MacOS/LivingWallpaper</string><string>--page</string><string>$ROOT/web/index.html</string>"
 [[ -n "$QUERY" ]] && ARGS="$ARGS<string>--query</string><string>${QUERY//&/&amp;}</string>"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 mkdir -p "$HOME/Library/Logs/living-wallpaper" "$HOME/Library/LaunchAgents"

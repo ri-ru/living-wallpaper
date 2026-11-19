@@ -1,0 +1,91 @@
+# Builds every host and runs it for real on macOS, Linux and Windows.
+# Each job opens a tank, clicks once, changes quote.txt, takes snapshots, and checks the SQLite file.
+# Screenshots are uploaded as artifacts.
+name: ci
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          mkdir -p build
+          swiftc -O -o build/LivingWallpaper hosts/macos/main.swift -framework Cocoa -framework WebKit -lsqlite3
+      - name: Run
+        run: |
+          echo "Evil is whatever distracts." > q.txt
+          (sleep 10; printf 'macOS sharks.\n' > q.txt) &
+          ./build/LivingWallpaper --page web/index.html --db out/tank.sqlite --quote-file q.txt \
+            --snapshot out --at 6,16 --eval "8:__click(400,300)" 2>&1 | tee out-log.txt
+          grep -q 'errors+frames \[\[\],[1-9]' out-log.txt
+          python3 tests/check_tank.py out/tank.sqlite
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: macos, path: "out*" }
+
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq python3-gi python3-gi-cairo gir1.2-webkit2-4.1 gir1.2-gtklayershell-0.1 xvfb fonts-dejavu-core
+      - name: Run
+        env:
+          WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: "1"   # CI containers cannot run bubblewrap
+        run: |
+          mkdir -p out
+          echo "Evil is whatever distracts." > q.txt
+          (sleep 12; printf 'Linux sharks.\n' > q.txt) &
+          xvfb-run -a -s "-screen 0 1440x900x24" python3 hosts/linux/living_wallpaper.py \
+            --db out/tank.sqlite --quote-file q.txt --snapshot out --at 6,18 --eval "8:__click(400,300)" 2>&1 | tee out-log.txt
+          grep -q 'errors+frames \[\[\],[1-9]' out-log.txt
+          python3 tests/check_tank.py out/tank.sqlite
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: linux, path: "out*" }
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: "8.0.x" }
+      - name: Build
+        run: dotnet publish hosts/windows/LivingWallpaper.csproj -c Release -r win-x64 --self-contained false -o build/win
+      - name: Run in a window
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          "Evil is whatever distracts." | Set-Content q.txt
+          $p = Start-Process build/win/LivingWallpaper.exe -PassThru -ArgumentList @(
+            '--page', "$PWD/web/index.html", '--db', "$PWD/out/tank.sqlite", '--quote-file', "$PWD/q.txt",
+            '--log', "$PWD/out/log.txt", '--windowed', '--snapshot', "$PWD/out", '--at', '8,20', '--eval', '10:__click(400,300)')
+          Start-Sleep 12; "Windows sharks." | Set-Content q.txt
+          $p.WaitForExit(60000) | Out-Null
+          Get-Content out/log.txt
+          if (-not (Select-String -Path out/log.txt -Pattern 'errors\+frames \[\[\],[1-9]' -Quiet)) { throw "page did not animate" }
+          python tests/check_tank.py out/tank.sqlite
+      - name: Attach behind the desktop icons
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force desk | Out-Null
+          $p = Start-Process build/win/LivingWallpaper.exe -PassThru -ArgumentList @(
+            '--page', "$PWD/web/index.html", '--db', "$PWD/desk/tank.sqlite", '--quote', 'Behind the icons.',
+            '--log', "$PWD/desk/log.txt", '--snapshot', "$PWD/desk", '--at', '8')
+          Start-Sleep 7
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("$PWD/desk/screen.png")
+          $p.WaitForExit(30000) | Out-Null
+          Get-Content desk/log.txt
+          [System.Environment]::OSVersion.Version | Out-String | Write-Host
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: windows, path: "out\ndesk" }

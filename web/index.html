@@ -437,6 +437,7 @@ function bubble(x, y) { return { x, y, v: 30 + Math.random() * 45, w: Math.rando
 // ---------- start ----------
 resize();
 if (TANK && TANK.sharks && TANK.sharks.length) restore(TANK); else openTank();
+window.__save = () => save(true);   // hosts call this before the computer sleeps
 window.__setQuote = text => { text = String(text || '').trim(); if (text && text !== QUOTE) { QUOTE = text; drawWords(); } };
 addEventListener('resize', () => resize());
 let last = performance.now(), lastDraw = 0, frames = 0, nextBreed = performance.now() + 20000, nextCensus = performance.now() + 5000;

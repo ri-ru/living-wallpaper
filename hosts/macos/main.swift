@@ -113,6 +113,7 @@ final class Host: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     init(_ o: Options) { opts = o }
 
     func applicationDidFinishLaunching(_ note: Notification) {
+        log("starting: page=\(opts.page.path)")
         let web = opts.page.deletingLastPathComponent()
         let schema = (try? String(contentsOf: web.appendingPathComponent("schema.sql"), encoding: .utf8)) ?? ""
         tank = Tank(path: opts.db, schema: schema)
@@ -124,6 +125,16 @@ final class Host: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in self?.pollMouse() }
         NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] _ in self?.sendClick(NSEvent.mouseLocation) }
         Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.watchQuote() }
+        // Sleep and wake: save before sleeping; after waking (or unlocking, or switching users back) the web
+        // content process may have been suspended or killed, so rebuild the windows from the saved tank.
+        let ws = NSWorkspace.shared.notificationCenter
+        ws.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.windows.forEach { $0.1.evaluateJavaScript("window.__save && window.__save()", completionHandler: nil) } }
+        for n in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
+            ws.addObserver(forName: n, object: nil, queue: .main) { [weak self] note in
+                log("\(note.name.rawValue): rebuilding")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self?.build() } }
+        }
         if let dir = opts.snapDir { scheduleSnapshots(dir) }
         for (t, js) in opts.evals {
             DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
@@ -212,6 +223,7 @@ final class Host: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     }
 
     func webView(_ w: WKWebView, didFinish n: WKNavigation!) { log("page loaded") }
+    func webViewWebContentProcessDidTerminate(_ w: WKWebView) { log("web content process ended: reloading"); w.reload() }
     func webView(_ w: WKWebView, didFail n: WKNavigation!, withError e: Error) { log("fail \(e)") }
     func webView(_ w: WKWebView, didFailProvisionalNavigation n: WKNavigation!, withError e: Error) { log("fail \(e)") }
 
@@ -247,8 +259,10 @@ let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath
 // Default page: <bundle>/Contents/Resources/web/index.html, else ../../web/index.html from the binary.
 let bundled = Bundle.main.resourceURL?.appendingPathComponent("web/index.html")
 let fallback = exe.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("web/index.html")
-let page = take("--page").map { URL(fileURLWithPath: $0).standardizedFileURL.absoluteURL }
-    ?? (bundled.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil } ?? fallback)
+// Resolve symlinks: WKWebView's loadFileURL throws (and AppKit swallows it) if the page is reached through a link.
+let page = (take("--page").map { URL(fileURLWithPath: $0) }
+    ?? (bundled.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil } ?? fallback))
+    .standardizedFileURL.resolvingSymlinksInPath().absoluteURL
 var evals: [(Double, String)] = []
 while let e = take("--eval"), let i = e.firstIndex(of: ":") { evals.append((Double(e[..<i]) ?? 0, String(e[e.index(after: i)...]))) }
 let opts = Options(page: page,

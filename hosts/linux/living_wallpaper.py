@@ -176,6 +176,7 @@ class Host:
             s.set_enable_developer_extras(True)
             view.set_background_color(Gdk.RGBA(0, 0, 0, 1))
             uri = "file://" + self.o.page + (("?" + self.o.query) if self.o.query else "")
+            view.connect("web-process-terminated", lambda v, *_: (log("web process ended: reloading"), v.reload()))
             view.load_uri(uri)
             win.add(view)
             win.connect("destroy", Gtk.main_quit)
