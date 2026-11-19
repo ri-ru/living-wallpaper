@@ -2,9 +2,17 @@
 
 A live ASCII aquarium for your desktop, on **macOS, Windows and Linux**.
 
-Hammerhead and leopard sharks swim behind your desktop icons. They're made of tiny monospace tiles, and they swim through a line of text, *"Evil is whatever distracts."*, tearing up the letters, which settle back afterwards. The text is yours to change.
+An aquarium lives behind your desktop icons, drawn in tiny monospace tiles:
 
-The sharks live in families. They have babies, grow up, get hungry, die, and sink to the sand, where they crumble into food for the others. The whole family tree is kept in a SQLite database.
+- hammerhead and leopard sharks
+- manta rays and pulsing jellyfish
+- a school of fish
+- crabs and shrimp on the sand
+- now and then, a pod of enormous whales passing through on their migration
+
+They swim through a line of text, *"Evil is whatever distracts."*, tearing up the letters, which settle back afterwards. The text is yours to change.
+
+Every animal has a name, parents and a family. They have young, grow up, get hungry, hunt, die, and sink to the sand, where they crumble into food for the others. The whole family tree is kept in a SQLite database.
 
 ![Living Wallpaper preview](docs/preview.gif)
 
@@ -93,7 +101,8 @@ Your previous picture is saved the first time, and uninstalling puts it back. Ru
 | --- | --- |
 | The words | `quote.txt` (above) |
 | Frame rate, cell size | `QUERY="fps=10&cell=12" ./install.sh` (PowerShell: `$env:QUERY="fps=10"; .\install.ps1`) |
-| Lifespan, growth time, birth rate, cooldown, population cap, newcomer threshold | constants at the top of `web/index.html`: `LIFE_HOURS`, `GROW_SECONDS`, `NATURAL_BIRTHS_PER_HOUR`, `BREED_COOLDOWN_HOURS`, `MAX_SHARKS`, `MIN_ALIVE` |
+| Lifespans, growth, birth rates, clutch sizes, caps, newcomers, sizes, speeds | the `SPECIES` table at the top of `web/index.html` |
+| How often whales visit | `WHALE_GAP_MIN` in `web/index.html` |
 | Sinking and decay | `SINK_SPEED`, `REST_MS`, `DECAY_MS` in `web/index.html` |
 | Colours | `HUES`, `FAMILY_HUES` in `web/index.html` |
 | Shark shape | `width()` and `drawShark()` in `web/index.html` |
@@ -106,16 +115,22 @@ Changes to `web/` show up after a restart:
 
 ## Life in the tank
 
-- **Families.** The tank opens with four founding families. Every shark has a name, a generation and two parents. A few tiles along its back show its family colour.
-- **Every shark looks a little different.** Each one has its own build (slender to stout), fin size, tail length, hammer width, swimming speed, colour tint and spot pattern. Rarely, one is born **pale** or **dark**. Children inherit a blend of both parents, with small mutations. Click a shark to see its traits on the name tag, for example `Tiki · gen 3 · Anfis · 2d4h · pale, broad-finned ♥`.
-- **Growing up.** Babies swim beside a parent and take about 36 hours to grow up. Food speeds that up a little.
-- **Children.** Grown sharks of the same species pair up on their own, about 3–4 births a day across the tank. Each adult has at most one child a day. Well-fed sharks you have loved are likelier to have children. Siblings never pair. Breeding stops at 24 living sharks.
-- **A week of life.** Each shark lives 6–8 days of real time. When it dies, it turns grey, sinks, rests on the sand, and crumbles into food for the others.
-- **Time away keeps counting.** When the computer sleeps or is off, the tank replays the missing time when the wallpaper starts again. Sharks born while you were away appear at the age they would be now. Sharks whose time ran out are recorded as dying at that moment, quietly, without a wave of sinking bodies. The log shows these events as "while you were away: …".
-- **Newcomers.** If fewer than 3 sharks are alive, a new family drifts in from the edge.
-- **Feasting.** Sharks that swim through the words get a little less hungry.
+| Animal | Lives | Grows up in | Young | Behaviour |
+| --- | --- | --- | --- | --- |
+| Hammerhead, leopard shark | 6–8 days | 36 h | 1 per pair, at most one a day | roams; circles your cursor; eats food, fish and shrimp when hungry |
+| Manta ray | 10–14 days | 2 days | rare | glides on slow wing beats |
+| Whale | 2–3 months | a week | very rare (a calf is born far away) | migrates: a pod passes through every 20–90 min, then is gone |
+| Jellyfish | 3–5 days | 12 h | buds on its own (one parent) | pulses and drifts; glows in its family's colour |
+| Fish | 2–3 days | 8 h | clutches of 3–6 | schools; flees sharks; curious about your cursor |
+| Crab | 8–12 days | a day | 1–3 | walks the sand picking up crumbs and remains |
+| Shrimp | 3–4 days | 8 h | 2–4 | hops along the sand |
 
-All of these numbers are constants at the top of `web/index.html`.
+- **Every animal looks a little different.** Each one has its own build, fin or wing size, tail, speed, colour tint and pattern. Rarely, one is born **pale** or **dark**. The young inherit a blend of their parents, with small mutations. Click an animal to see its name tag, for example `Tiki · hammerhead · gen 3 · Anfis · 2d4h · pale, broad-finned ♥`.
+- **Food chain.** Hungry sharks hunt fish and shrimp ("Kiki caught Lolo the fish"). Dead sharks, mantas and whales sink and crumble into food; small animals leave a crumb. Crabs and shrimp clean up the sand. Sharks that swim through the words get a little less hungry.
+- **Newcomers.** If a species runs low, a new family of it arrives: a school swims in, crabs walk in along the sand, a whale pod finds the tank.
+- **Time away keeps counting.** When the computer sleeps or is off, the tank replays the missing time when the wallpaper starts again. Animals born meanwhile appear at the age they would be now. Those whose time ran out are recorded as dying quietly at that moment. The log shows these events as "while you were away: …".
+
+All of these numbers are in the `SPECIES` table at the top of `web/index.html`.
 
 ## The family tree (SQLite)
 
@@ -128,19 +143,24 @@ All of these numbers are constants at the top of `web/index.html`.
 | Table / view | Contents |
 | --- | --- |
 | `families` | `id, name, hue, founded_at` |
-| `sharks` | `id, name, species, family_id → families, generation, parent_a_id → sharks, parent_b_id → sharks, born_at, lifespan_hours, died_at, length, adult_length, fullness, love` |
-| `shark_traits` | `shark_id → sharks, girth, fins, tail, head, speed, tint_r, tint_g, tint_b, variant (common/pale/dark), pattern_seed` |
-| `events` | `id, at, kind, shark_id → sharks, text`. Kinds: `opened`, `arrived`, `born`, `fed`, `loved`, `died`, `returned`. |
+| `animals` | `id, name, species, family_id → families, generation, parent_a_id → animals, parent_b_id → animals, born_at, lifespan_hours, died_at, cause_of_death, length, adult_length, fullness, love` |
+| `animal_traits` | `animal_id → animals, girth, fins, tail, head, speed, tint_r, tint_g, tint_b, variant (common/pale/dark), pattern_seed` |
+| `events` | `id, at, kind, animal_id → animals, text`. Kinds: `opened`, `arrived`, `born`, `fed`, `loved`, `eaten`, `died`, `returned`, `visit`. |
 | `meta` | `last_seen_ms` (when the wallpaper last ran, for replaying time away) |
-| `babies` (view) | every shark that has parents, with the parents' and family's names |
-| `alive` (view) | sharks that have not died |
+| `babies` (view) | every animal that has parents, with the parents' and family's names |
+| `alive` (view) | animals that have not died |
+| `census` (view) | living animals per species, and the latest generation |
+| `sharks` (view) | the sharks only |
 
 ```sh
+sqlite3 -header -column ~/Library/Application\ Support/LivingWallpaper/tank.sqlite "select * from census"
 sqlite3 -header -column ~/Library/Application\ Support/LivingWallpaper/tank.sqlite "select * from babies"
 sqlite3 -header -column ~/Library/Application\ Support/LivingWallpaper/tank.sqlite "select at, text from events order by id desc limit 20"
 ```
 
 To start a fresh tank, uninstall, move `tank.sqlite` away, and install again.
+
+**Tanks made before v2** (with a `sharks` table instead of `animals`): stop the wallpaper, back up `tank.sqlite`, and run `sqlite3 tank.sqlite < tools/migrate-v1-to-v2.sql` once. All sharks, traits and events are kept.
 
 ## How it works
 

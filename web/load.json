@@ -1,8 +1,8 @@
 {
   "families": "SELECT id, name, hue FROM families ORDER BY id",
-  "sharks": "SELECT s.*, (SELECT max(c.born_ms) FROM sharks c WHERE c.parent_a_id = s.id OR c.parent_b_id = s.id) AS last_bred_ms FROM sharks s WHERE s.died_at IS NULL ORDER BY s.id",
-  "traits": "SELECT * FROM shark_traits",
-  "names": "SELECT id, name FROM sharks",
-  "meta": "SELECT key, value FROM meta",
-  "log": "SELECT strftime('%H:%M', at) AS t, text FROM (SELECT * FROM events ORDER BY id DESC LIMIT 120) ORDER BY id"
+  "animals":  "SELECT a.*, (SELECT max(c.born_ms) FROM animals c WHERE c.parent_a_id = a.id OR c.parent_b_id = a.id) AS last_bred_ms FROM animals a WHERE a.died_at IS NULL ORDER BY a.id",
+  "traits":   "SELECT * FROM animal_traits",
+  "names":    "SELECT id, name FROM animals",
+  "meta":     "SELECT key, value FROM meta",
+  "log":      "SELECT strftime('%H:%M', at) AS t, text FROM (SELECT * FROM events ORDER BY id DESC LIMIT 120) ORDER BY id"
 }
