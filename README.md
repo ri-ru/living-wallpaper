@@ -5,7 +5,6 @@ A live ASCII aquarium for your desktop, on **macOS, Windows and Linux**.
 An aquarium lives behind your desktop icons, drawn in tiny monospace tiles:
 
 - hammerhead and leopard sharks
-- manta rays and pulsing jellyfish
 - a school of fish
 - crabs and shrimp on the sand
 - now and then, a pod of enormous whales passing through on their migration
@@ -105,7 +104,7 @@ Your previous picture is saved the first time, and uninstalling puts it back. Ru
 | How often whales visit | `WHALE_GAP_MIN` in `web/index.html` |
 | Sinking and decay | `SINK_SPEED`, `REST_MS`, `DECAY_MS` in `web/index.html` |
 | Colours | `HUES`, `FAMILY_HUES` in `web/index.html` |
-| Body shapes | `width()`, `drawSwimmer()` (sharks, mantas, whales) and `drawJelly()` in `web/index.html` |
+| Body shapes | `width()`, `drawSwimmer()` (sharks, whales) in `web/index.html` |
 | A completely different scene | Replace `web/index.html`. The hosts show any page that follows [the host contract](docs/HOST_PROTOCOL.md). |
 
 Changes to `web/` show up after a restart:
@@ -118,15 +117,13 @@ Changes to `web/` show up after a restart:
 | Animal | Lives | Grows up in | Young | Behaviour |
 | --- | --- | --- | --- | --- |
 | Hammerhead, leopard shark | 6–8 days | 36 h | 1 per pair, at most one a day | roams; circles your cursor; eats food, fish and shrimp when hungry |
-| Manta ray | 10–14 days | 2 days | rare | glides on slow wing beats |
 | Whale | 2–3 months | a week | very rare (a calf is born far away) | migrates: a pod passes through every 20–90 min, then is gone |
-| Jellyfish | 3–5 days | 12 h | buds on its own (one parent) | pulses and drifts; glows in its family's colour |
 | Fish | 2–3 days | 8 h | clutches of 3–6 | schools; flees sharks; curious about your cursor |
 | Crab | 8–12 days | a day | 1–3 | walks the sand picking up crumbs and remains |
 | Shrimp | 3–4 days | 8 h | 2–4 | hops along the sand |
 
 - **Every animal looks a little different.** Each one has its own build, fin or wing size, tail, speed, colour tint and pattern. Rarely, one is born **pale** or **dark**. The young inherit a blend of their parents, with small mutations. Click an animal to see its name tag, for example `Tiki · hammerhead · gen 3 · Anfis · 2d4h · pale, broad-finned ♥`.
-- **Food chain.** Hungry sharks hunt fish and shrimp ("Kiki caught Lolo the fish"). Dead sharks, mantas and whales sink and crumble into food; small animals leave a crumb. Crabs and shrimp clean up the sand. Sharks that swim through the words get a little less hungry.
+- **Food chain.** Hungry sharks hunt fish and shrimp ("Kiki caught Lolo the fish"). Dead sharks and whales sink and crumble into food; small animals leave a crumb. Crabs and shrimp clean up the sand. Sharks that swim through the words get a little less hungry.
 - **Newcomers.** If a species runs low, a new family of it arrives: a school swims in, crabs walk in along the sand, a whale pod finds the tank.
 - **Time away keeps counting.** When the computer sleeps or is off, the tank replays the missing time when the wallpaper starts again. Animals born meanwhile appear at the age they would be now. Those whose time ran out are recorded as dying quietly at that moment. The log shows these events as "while you were away: …".
 
@@ -185,7 +182,15 @@ docs/
 
 ## Cost
 
-On an M4 MacBook Air: about 32% of one CPU core at 15 fps while the desktop is visible. When windows cover the desktop completely, the web engine stops drawing. Use `fps=10` for less.
+On an M4 MacBook Air, with 24 sharks, a fish school, crabs and shrimp: about **7% of one CPU core** while the desktop is visible (it was 16% before the optimisation pass). How it stays cheap:
+
+- **10 frames a second.** The tiles snap to a 10-pixel grid, so faster frames would look the same.
+- **Tiles only redraw where something changed.**
+- **The words are a cached image**; only the dots a shark has knocked loose are drawn, in one batch.
+- **Slow things on a slow layer.** The light, sand, drifting specks and the log update twice a second.
+- **Nothing is drawn while windows cover the desktop.** The web engine stops on its own.
+
+**On battery (macOS) it switches off completely.** The tank is saved, the desktop keeps the still words picture, and the animation comes back when you plug in. Start the host with `--keep-on-battery` to keep it running anyway. Windows and Linux don't do this yet.
 
 ## Troubleshooting
 

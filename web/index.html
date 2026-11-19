@@ -10,6 +10,7 @@
 </head>
 <body>
 <canvas id="bg"></canvas>
+<canvas id="tl"></canvas>
 <canvas id="c"></canvas>
 <canvas id="tx"></canvas>
 <script>
@@ -17,10 +18,14 @@ window.__errs = [];
 addEventListener('error', e => window.__errs.push(e.message + ' @' + e.lineno));
 (() => {
 const P = new URLSearchParams(location.search);
+if (P.get('seed')) {                                              // ?seed=N: repeatable runs (benchmarks and tests)
+  let sd = +P.get('seed') | 0;
+  Math.random = () => { sd = sd + 0x6D2B79F5 | 0; let t = Math.imul(sd ^ sd >>> 15, 1 | sd); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
 // The words. Priority: ?quote=... in the URL, then the host's quote.txt (window.__quote), then this default.
 let QUOTE = P.get('quote') || window.__quote || 'Evil is whatever distracts.';
 const S = +P.get('cell') || 10;            // aquarium cell size, css px
-const FPS = +P.get('fps') || 15;           // measured on an M4 MacBook Air (13"): ~32% of one core at 15 fps, ~42% at 20 (sharks only)
+const FPS = +P.get('fps') || 10;           // tiles snap to a 10 px grid, so 10 fps looks the same as 15 for animals this slow
 const CATCHUP_STEP_MIN = 20;               // replaying time away (sleep, shutdown) in 20-minute steps
 const TIME_SCALE = +P.get('timescale') || 1;   // tests speed up ageing
 const WHALE_GAP_MIN = [20, 90];            // design choice: minutes between whale visits
@@ -31,9 +36,7 @@ const WHALE_GAP_MIN = [20, 90];            // design choice: minutes between wha
 const SPECIES = {
   hammer:  { db: 'hammerhead', label: 'hammerhead', body: 'swim',  life: [144, 192],   grow: 36,  rate: 0.08,  cool: 24,  cap: 12, min: 0,  clutch: [1, 1], pair: true,  size: [0.30, 0.42], depth: [0.55, 1.0], hunger: 7200, wave: 0.045, speed: 0.17 },
   leopard: { db: 'leopard',    label: 'leopard shark', body: 'swim', life: [144, 192], grow: 36,  rate: 0.08,  cool: 24,  cap: 12, min: 0,  clutch: [1, 1], pair: true,  size: [0.26, 0.36], depth: [0.55, 1.0], hunger: 7200, wave: 0.045, speed: 0.17 },
-  manta:   { db: 'manta',      label: 'manta ray',  body: 'swim',  life: [240, 336],   grow: 48,  rate: 0.03,  cool: 72,  cap: 4,  min: 1,  clutch: [1, 1], pair: true,  size: [0.30, 0.40], depth: [0.45, 0.75], hunger: 0, wave: 0.008, speed: 0.07 },
   whale:   { db: 'whale',      label: 'whale',      body: 'swim',  life: [1440, 2160], grow: 168, rate: 0.004, cool: 720, cap: 3,  min: 1,  clutch: [1, 1], pair: true,  size: [1.20, 1.50], depth: [0.42, 0.48], hunger: 0, wave: 0.012, speed: 0.045, migrates: true },
-  jelly:   { db: 'jellyfish',  label: 'jellyfish',  body: 'jelly', life: [72, 120],    grow: 12,  rate: 0.12,  cool: 18,  cap: 10, min: 3,  clutch: [1, 2], pair: false, size: [0.018, 0.026], depth: [0.6, 0.95], hunger: 0 },
   fish:    { db: 'fish',       label: 'fish',       body: 'fish',  life: [48, 72],     grow: 8,   rate: 0.6,   cool: 12,  cap: 60, min: 12, clutch: [3, 6], pair: true,  size: [1, 1], depth: [0.9, 0.9], hunger: 5400 },
   crab:    { db: 'crab',       label: 'crab',       body: 'crawl', life: [192, 288],   grow: 24,  rate: 0.08,  cool: 48,  cap: 8,  min: 2,  clutch: [1, 3], pair: true,  size: [1, 1], depth: [1, 1], hunger: 5400 },
   shrimp:  { db: 'shrimp',     label: 'shrimp',     body: 'crawl', life: [72, 96],     grow: 8,   rate: 0.2,   cool: 24,  cap: 12, min: 3,  clutch: [2, 4], pair: true,  size: [1, 1], depth: [1, 1], hunger: 5400 },
@@ -58,16 +61,18 @@ const wall = () => Date.now() * TIME_SCALE;
 const cv = document.getElementById('c'), mainCtx = cv.getContext('2d');
 const bgv = document.getElementById('bg'), bgCtx = bgv.getContext('2d');
 const txv = document.getElementById('tx'), txCtx = txv.getContext('2d');
+const tlv = document.getElementById('tl'), tlCtx = tlv.getContext('2d');   // big animals' tiles: only changed cells are redrawn
 let ctx = mainCtx;   // tile() draws into whichever layer ctx points at
 const field = document.createElement('canvas'), fctx = field.getContext('2d', { willReadFrequently: true });
 const dfield = document.createElement('canvas'), dctx = dfield.getContext('2d', { willReadFrequently: true });
-let W, H, M, DPR, cols, rows, cellRand, T, floorY, lastBg = -1e9;
+let W, H, M, DPR, cols, rows, cellRand, T, floorY, lastBg = -1e9, prevKey;
 function resize() {
   DPR = window.devicePixelRatio || 1; W = innerWidth; H = innerHeight; M = Math.min(W, H);
-  for (const [c, g] of [[cv, mainCtx], [bgv, bgCtx], [txv, txCtx]]) { c.width = Math.round(W * DPR); c.height = Math.round(H * DPR); g.setTransform(DPR, 0, 0, DPR, 0, 0); }
+  for (const [c, g] of [[cv, mainCtx], [bgv, bgCtx], [txv, txCtx], [tlv, tlCtx]]) { c.width = Math.round(W * DPR); c.height = Math.round(H * DPR); g.setTransform(DPR, 0, 0, DPR, 0, 0); }
   cols = Math.ceil(W / S); rows = Math.ceil(H / S); floorY = (rows - 2) * S;
   field.width = dfield.width = cols; field.height = dfield.height = rows;
   cellRand = new Float32Array(cols * rows).map(() => Math.random());
+  prevKey = new Int32Array(cols * rows);
   document.body.style.backgroundImage = 'linear-gradient(#0e1112 1px, transparent 1px), linear-gradient(90deg, #0e1112 1px, transparent 1px)';
   document.body.style.backgroundSize = `${S}px ${S}px`;
   specks = Array.from({ length: Math.round(cols * rows / 110) }, () => ({ x: Math.random() * W, y: Math.random() * H, v: 2 + Math.random() * 5, a: 0.15 + Math.random() * 0.25 }));
@@ -116,7 +121,9 @@ function buildAtlas() {
   [...'.oO-'].forEach((c, i) => g.fillText(c, i * T + T / 2, T / 2));
 }
 const GI = {}; [...GLYPHS].forEach((c, i) => GI[c] = i);
+const perf = { frames: 0, js: 0, draws: 0, tiles: 0, dotsDrawn: 0 };                     // window.__perf(): average cost per frame
 function tile(hue, level, glyph, x, y, alpha) {
+  perf.draws++;
   ctx.globalAlpha = alpha;
   ctx.drawImage(atlas, glyph * T, (hue * LEVELS + level) * T, T, T, Math.floor(x / S) * S, Math.floor(y / S) * S, S, S);
 }
@@ -127,7 +134,9 @@ function glyphFor(level, cell, t) {
 
 // ---------- the words: fine dots; big swimmers feast through them, then the letters settle back ----------
 const TS = 2;                                                   // text dot pitch, css px
-let dots = [], textBox = { x0: 0, y0: 0, x1: 0, y1: 0 }, textDirty = true, wasMoving = true;
+const GB = 24;                                                  // dot grid bucket size, css px
+let dots = [], textBox = { x0: 0, y0: 0, x1: 0, y1: 0 }, buckets = new Map(), active = new Set(), fullPaint = true, lastRect = null;
+const homeCanvas = document.createElement('canvas'), homeCtx = homeCanvas.getContext('2d');   // the settled words, drawn once
 function layoutWords(g) {
   const fs = Math.round(Math.min(W * 0.085, 150) * 0.7);
   g.font = `400 ${fs}px "Iowan Old Style", "Hoefler Text", "Palatino Linotype", Georgia, "DejaVu Serif", serif`;
@@ -140,6 +149,7 @@ function layoutWords(g) {
   const lh = fs * 1.15, top = H * 0.46 - (lines.length - 1) * lh / 2, maxw = Math.max(...lines.map(l => g.measureText(l).width)), left = (W - maxw) / 2;
   return { fs, lines, lh, top, maxw, left };
 }
+const bkey = (bx, by) => bx * 65536 + by;
 function drawWords() {
   const off = document.createElement('canvas'), g = off.getContext('2d', { willReadFrequently: true });
   off.width = Math.round(W * DPR); off.height = Math.round(H * DPR); g.setTransform(DPR, 0, 0, DPR, 0, 0);
@@ -147,49 +157,76 @@ function drawWords() {
   g.fillStyle = '#000'; g.textBaseline = 'middle';
   L.lines.forEach((l, i) => g.fillText(l, L.left, L.top + i * L.lh));
   const d = g.getImageData(0, 0, off.width, off.height).data;
-  dots = [];
+  dots = []; buckets = new Map(); active = new Set();
   for (let y = 0; y < H; y += TS) for (let x = 0; x < W; x += TS) {
     const k = (Math.round((y + TS / 2) * DPR) * off.width + Math.round((x + TS / 2) * DPR)) * 4;
-    if (d[k + 3] > 110) dots.push({ hx: x, hy: y, x, y, vx: 0, vy: 0, r: Math.random() });
+    if (d[k + 3] > 110) {
+      const p = { hx: x, hy: y, x, y, vx: 0, vy: 0, r: Math.random() }, bk = bkey(Math.floor(x / GB), Math.floor(y / GB));
+      dots.push(p); (buckets.get(bk) || buckets.set(bk, []).get(bk)).push(p);
+    }
   }
   textBox = { x0: L.left - 40, x1: L.left + L.maxw + 40, y0: L.top - L.fs, y1: L.top + (L.lines.length - 1) * L.lh + L.fs };
-  textDirty = true;
+  homeCanvas.width = Math.round(W * DPR); homeCanvas.height = Math.round(H * DPR); homeCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  homeCtx.fillStyle = '#ececec'; for (const p of dots) homeCtx.fillRect(p.hx, p.hy, TS, TS);
+  fullPaint = true;
 }
 // Push dots away from (x, y); returns how many were hit, so an animal can count what it ate.
+// Only the grid buckets around the point are looked at (dots are bucketed by their home position).
 function kick(x, y, radius, power) {
   if (x + radius < textBox.x0 || x - radius > textBox.x1 || y + radius < textBox.y0 - 60 || y - radius > textBox.y1 + 60) return 0;
-  const r2 = radius * radius; let hit = 0;
-  for (const p of dots) {
-    const dx = p.x - x, dy = p.y - y, d2 = dx * dx + dy * dy;
-    if (d2 < r2) { hit++; const d = Math.sqrt(d2) || 1, f = (1 - d / radius) * power; p.vx += dx / d * f + (Math.random() - .5) * f * 0.4; p.vy += dy / d * f + (Math.random() - .5) * f * 0.4; }
-  }
+  const r2 = radius * radius, reach = radius + 40; let hit = 0;
+  for (let bx = Math.floor((x - reach) / GB); bx <= Math.floor((x + reach) / GB); bx++)
+    for (let by = Math.floor((y - reach) / GB); by <= Math.floor((y + reach) / GB); by++) {
+      const list = buckets.get(bkey(bx, by)); if (!list) continue;
+      for (const p of list) {
+        const dx = p.x - x, dy = p.y - y, d2 = dx * dx + dy * dy;
+        if (d2 < r2) {
+          hit++; const d = Math.sqrt(d2) || 1, f = (1 - d / radius) * power;
+          if (f < 1.5 && !active.has(p)) continue;              // too small a nudge to see; leave the dot asleep
+          p.vx += dx / d * f + (Math.random() - .5) * f * 0.4; p.vy += dy / d * f + (Math.random() - .5) * f * 0.4; active.add(p);
+        }
+      }
+    }
   return hit;
 }
 function updateDots(dt) {
   for (const a of animals) {
-    if (a.dead || !shown(a)) continue;
-    if (a.sp) {                                                 // swimmers plough through and feast on the words
-      let ate = 0;
-      for (let i = 0; i < a.sp.length; i += 3) { const p = a.sp[i]; ate += kick(p.x, p.y, width(a, p.u) * a.len * 1.6 + 8, 26 * a.depth); }
-      if (ate && isShark(a)) a.full = Math.min(1, a.full + ate * 0.000004);
-    } else if (a.kind === 'jelly') kick(a.x, a.y, a.len * 1.4, 6);
+    if (a.dead || !shown(a) || !a.sp) continue;                 // swimmers plough through and feast on the words
+    let ate = 0;
+    for (let i = 0; i < a.sp.length; i += 3) { const p = a.sp[i]; ate += kick(p.x, p.y, width(a, p.u) * a.len * 1.6 + 8, 26 * a.depth); }
+    if (ate && isShark(a)) a.full = Math.min(1, a.full + ate * 0.000004);
   }
-  let moving = false;
-  for (const p of dots) {
+  const k0 = 16, damp = Math.pow(0.004, dt);                    // a stiff spring: dots are home again within about a second
+  for (const p of active) {                                     // only dots that are moving
     const ox = p.hx - p.x, oy = p.hy - p.y;
-    if (ox * ox + oy * oy < 0.02 && p.vx * p.vx + p.vy * p.vy < 0.05) { p.x = p.hx; p.y = p.hy; p.vx = p.vy = 0; continue; }
-    moving = true;
-    const k = 9 * (0.6 + p.r), damp = Math.pow(0.02, dt);
+    if (ox * ox + oy * oy < 0.25 && p.vx * p.vx + p.vy * p.vy < 1) { p.x = p.hx; p.y = p.hy; p.vx = p.vy = 0; active.delete(p); continue; }
+    const k = k0 * (0.6 + p.r);
     p.vx += ox * k * dt; p.vy += oy * k * dt; p.vx *= damp; p.vy *= damp; p.x += p.vx * dt; p.y += p.vy * dt;
   }
-  textDirty = textDirty || moving || wasMoving;                 // one last redraw after the dots settle
-  wasMoving = moving;
 }
+// Repaint only the area that changed: copy it from the cached settled words in one draw, punch out the homes
+// of the dots that are away, and draw those dots where they are now.
 function paintWords() {
-  if (!textDirty) return;
-  textDirty = false;
-  txCtx.clearRect(0, 0, W, H); txCtx.fillStyle = '#ececec';
-  for (const p of dots) txCtx.fillRect(p.x, p.y, TS, TS);
+  if (fullPaint) { txCtx.clearRect(0, 0, W, H); txCtx.drawImage(homeCanvas, 0, 0, W, H); perf.draws++; fullPaint = false; lastRect = null; return; }
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const p of active) { if (p.x < x0) x0 = p.x; if (p.hx < x0) x0 = p.hx; if (p.y < y0) y0 = p.y; if (p.hy < y0) y0 = p.hy;
+                            if (p.x > x1) x1 = p.x; if (p.hx > x1) x1 = p.hx; if (p.y > y1) y1 = p.y; if (p.hy > y1) y1 = p.hy; }
+  const cur = x1 >= x0 ? [Math.floor(x0) - TS, Math.floor(y0) - TS, Math.ceil(x1) + TS * 2, Math.ceil(y1) + TS * 2] : null;
+  let r = cur;
+  if (lastRect) r = r ? [Math.min(r[0], lastRect[0]), Math.min(r[1], lastRect[1]), Math.max(r[2], lastRect[2]), Math.max(r[3], lastRect[3])] : lastRect;
+  lastRect = cur;
+  if (!r) return;                                               // nothing moved
+  const w = r[2] - r[0], h = r[3] - r[1];
+  txCtx.clearRect(r[0], r[1], w, h);
+  txCtx.drawImage(homeCanvas, r[0] * DPR, r[1] * DPR, w * DPR, h * DPR, r[0], r[1], w, h); perf.draws++;
+  if (!active.size) return;
+  txCtx.beginPath();                                            // punch out the homes of the dots that are away: one draw
+  for (const p of active) txCtx.rect(p.hx, p.hy, TS, TS);
+  txCtx.globalCompositeOperation = 'destination-out'; txCtx.fill(); txCtx.globalCompositeOperation = 'source-over';
+  txCtx.beginPath();                                            // and draw them where they are now: one draw
+  for (const p of active) txCtx.rect(p.x, p.y, TS, TS);
+  txCtx.fillStyle = '#ececec'; txCtx.fill();
+  perf.draws += 2; perf.dotsDrawn += active.size;
 }
 
 // ---------- names, families, events (stored by the host in SQLite) ----------
@@ -209,6 +246,7 @@ const famOf = a => families.find(f => f.id === a.family) || {};
 const clock = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 function event(kind, text, animal, atMs) {                   // atMs: real time it happened (default: now)
   log.push({ t: performance.now(), line: `${atMs ? hhmm(atMs) : clock()}  ${text}` }); if (log.length > 300) log.shift();
+  lastBg = -1e9;                                                  // show it on the next frame
   if (HOST) HOST([[`INSERT INTO events (at, kind, animal_id, text)
                     VALUES (coalesce(datetime(? / 1000, 'unixepoch', 'localtime'), datetime('now', 'localtime')), ?, (SELECT id FROM animals WHERE id = ?), ?)`,
                    [atMs ?? null, kind, animal ? animal.id : null, text]]]);
@@ -252,7 +290,7 @@ function randomTraits() {
     tint: [0, 0, 0].map(() => Math.round(gauss() * 18)), variant: r < 0.04 ? 'pale' : r < 0.08 ? 'dark' : 'common', seed: Math.random() * 2 ** 31 | 0 };
 }
 function inheritTraits(a, b) {
-  b = b || a;                                                     // budding jellyfish have one parent
+  b = b || a;                                                     // species with one parent (none at the moment)
   const mix = k => clamp((a[k] + b[k]) / 2 + gauss() * 0.06, 0.7, 1.35);
   const variant = Math.random() < 0.03 ? (Math.random() < 0.5 ? 'pale' : 'dark') : (Math.random() < 0.5 ? a.variant : b.variant);
   return { girth: mix('girth'), fins: mix('fins'), tail: mix('tail'), head: mix('head'), speed: clamp((a.speed + b.speed) / 2 + gauss() * 0.04, 0.8, 1.25),
@@ -262,7 +300,7 @@ function describe(a) {
   const t = a.traits, d = [];
   if (t.variant !== 'common') d.push(t.variant);
   if (t.girth > 1.12) d.push('stout'); else if (t.girth < 0.88) d.push('slender');
-  if (t.fins > 1.15) d.push(a.kind === 'jelly' ? 'long-tentacled' : a.kind === 'manta' ? 'wide-winged' : 'broad-finned');
+  if (t.fins > 1.15) d.push('broad-finned');
   if (t.tail > 1.15) d.push('long-tailed');
   if (t.speed > 1.1) d.push('quick'); else if (t.speed < 0.9) d.push('slow');
   return d.join(', ');
@@ -294,7 +332,7 @@ function makeAnimal(o) {
       orbit: Math.random() * Math.PI * 2, spinUntil: 0, tagUntil: 0, dead: null, hop: null, yo: 0 });
   a.traits = a.traits || randomTraits();
   const rr = seeded(a.traits.seed);                               // the same pattern every time it is loaded
-  const nSpots = { leopard: 20 + (rr() * 28 | 0), hammer: rr() * 5 | 0, whale: 10 + (rr() * 16 | 0), manta: 2 }[a.kind] || 0;
+  const nSpots = { leopard: 20 + (rr() * 28 | 0), hammer: rr() * 5 | 0, whale: 10 + (rr() * 16 | 0) }[a.kind] || 0;
   a.spots = Array.from({ length: nSpots }, () => ({ u: 0.12 + rr() * 0.75, s: (rr() * 2 - 1) * 0.8, r: (a.kind === 'leopard' ? 0.35 : 0.2) + rr() * 0.5 }));
   if (sp.body === 'swim') {
     a.pts = []; for (let i = 0; i < N; i++) a.pts.push({ x: x - Math.cos(ang) * a.len * i / N, y: y - Math.sin(ang) * a.len * i / N });
@@ -317,10 +355,10 @@ function foundFamily(kind, fromEdge) {
   const ex = side < 0 ? -M * 0.3 : W + M * 0.3, a = side < 0 ? 0 : Math.PI;
   const at = () => fromEdge ? { x: ex + (Math.random() - .5) * 80, y: (0.2 + 0.6 * Math.random()) * H, a } : {};
   const adult = (extra) => {
-    const adultLen = sp.body === 'swim' ? M * rand(sp.size) : sp.body === 'jelly' ? M * rand(sp.size) : 1;
+    const adultLen = sp.body === 'swim' ? M * rand(sp.size) : 1;
     return makeAnimal(Object.assign({ name: newName(), kind, family: fam.id, len: adultLen, adultLen }, at(), extra));
   };
-  const counts = { hammer: [2, 1], leopard: [2, 1], manta: [2, 0], whale: [2, 0], jelly: [4, 0], fish: [22, 0], crab: [2, 1], shrimp: [4, 0] }[kind];
+  const counts = { hammer: [2, 1], leopard: [2, 1], whale: [2, 0], fish: [22, 0], crab: [2, 1], shrimp: [4, 0] }[kind];
   const founders = Array.from({ length: counts[0] }, () => adult());
   for (let i = 0; i < counts[1]; i++) {
     const kidAdult = founders[0].adultLen * (0.9 + Math.random() * 0.2);
@@ -334,13 +372,13 @@ function foundFamily(kind, fromEdge) {
 }
 const ARRIVAL_TEXT = {
   hammer: f => `a hammerhead family swims in: the ${f}`, leopard: f => `a leopard shark family swims in: the ${f}`,
-  manta: f => `a pair of manta rays glides in: the ${f}`, whale: f => `a pod of whales has found the tank: the ${f}`,
-  jelly: f => `jellyfish drift in: the ${f}`, fish: f => `a school of fish arrives: the ${f}`,
+  whale: f => `a pod of whales has found the tank: the ${f}`,
+  fish: f => `a school of fish arrives: the ${f}`,
   crab: f => `crabs walk in along the sand: the ${f}`, shrimp: f => `shrimp hop in along the sand: the ${f}`,
 };
 function openTank() {
   for (const k of ['hammer', 'leopard', 'hammer', 'leopard']) foundFamily(k, false);
-  for (const k of ['manta', 'jelly', 'fish', 'crab', 'shrimp', 'whale']) foundFamily(k, false);
+  for (const k of ['fish', 'crab', 'shrimp', 'whale']) foundFamily(k, false);
   nextVisit = performance.now() + (2 + Math.random() * 3) * 60000;   // the first whale visit comes soon
   save(true);
   event('opened', `the tank opens: ${families.map(f => f.name).join(', ')}`);
@@ -394,12 +432,6 @@ function catchUp(from, to) {
 // ---------- shapes ----------
 function width(a, u) {                                            // half-width along the body, as a fraction of length
   const g = a.traits ? a.traits.girth : 1;
-  if (a.kind === 'manta') {                                       // diamond wings, then a whip tail
-    if (u > 0.55) return 0.006 * g;
-    const tri = Math.max(0, 1 - Math.abs(u - 0.22) / (u < 0.22 ? 0.24 : 0.32));            // pointed diamond wings
-    const w = Math.pow(tri, 0.9) * 0.46 * (a.traits ? a.traits.fins : 1);
-    return Math.max(0.02, w * (0.86 + 0.14 * Math.sin(a.phase))) * g;   // the wings beat
-  }
   if (a.kind === 'whale') {
     const b = u < 0.32 ? 0.035 + 0.055 * Math.sin(u / 0.32 * Math.PI / 2) : 0.09 * (1 - Math.pow((u - 0.32) / 0.68, 1.5)) + 0.008;   // humpback: round head, deep chest, long taper
     return b * g;
@@ -424,7 +456,7 @@ function bodyPath(g, a, sp) {
 }
 function drawSwimmer(g, a, sp) {
   const L = a.len, n = sp.length, dim = (0.45 + 0.55 * a.depth) * (a.dead ? 0.75 : 1), tr = a.traits;
-  const species = { hammer: [138, 150, 178], leopard: [170, 155, 120], manta: [112, 122, 146], whale: [118, 136, 172] }[a.kind];
+  const species = { hammer: [138, 150, 178], leopard: [170, 155, 120], whale: [118, 136, 172] }[a.kind];
   const base = a.dead ? [128, 128, 126] : shade(a, species);
   const col = (k, c = base) => `rgb(${clamp(c[0] * k * dim, 0, 255) | 0},${clamp(c[1] * k * dim, 0, 255) | 0},${clamp(c[2] * k * dim, 0, 255) | 0})`;
   const at = u => Math.round(u * (n - 1));
@@ -436,14 +468,6 @@ function drawSwimmer(g, a, sp) {
     g.lineTo(p.x + p.nx * w * side * 0.8 - p.tx * root * L, p.y + p.ny * w * side * 0.8 - p.ty * root * L);
     g.closePath(); g.fill();
   };
-  if (a.kind === 'manta') {
-    g.fillStyle = col(1); bodyPath(g, a, sp); g.fill();
-    g.strokeStyle = col(1.9); g.lineWidth = L * 0.018; g.stroke();          // pale wing edges
-    const h = sp[0], k = L * 0.03;                                         // the two small head fins
-    for (const s of [1, -1]) { g.strokeStyle = col(1.3); g.lineWidth = L * 0.02; g.beginPath(); g.moveTo(h.x + h.nx * k * s, h.y + h.ny * k * s); g.lineTo(h.x + h.tx * k * 1.2 + h.nx * k * 0.9 * s, h.y + h.ty * k * 1.2 + h.ny * k * 0.9 * s); g.stroke(); }
-    if (!a.dead) for (const s of [1, -1]) { const p = sp[at(0.2)]; g.fillStyle = col(2.3); g.beginPath(); g.arc(p.x + p.nx * L * 0.07 * s, p.y + p.ny * L * 0.07 * s, L * 0.035, 0, Math.PI * 2); g.fill(); }
-    return;
-  }
   if (a.kind === 'whale') {
     const pale = [200, 208, 218];
     for (const s of [1, -1]) fin(at(0.28), s, 0.26 * tr.fins, 0.22 * tr.fins, 0.07, 1, a.dead ? base : pale);   // long humpback flippers
@@ -488,31 +512,6 @@ function drawSwimmer(g, a, sp) {
     g.arc(p.x + p.nx * w * s.s, p.y + p.ny * w * s.s, w * s.r * 0.5, 0, Math.PI * 2); g.fill();
   }
 }
-function drawJelly(g, j) {
-  const fade = j.dead ? Math.max(0, 1 - (performance.now() - j.dead.t) / 3000) : 1;
-  const c = shade(j, HUES[famOf(j).hue] || HUES.pink).map(v => v * (0.55 + 0.45 * j.depth));
-  const r = j.len * (1 + 0.12 * Math.sin(j.phase)) * j.traits.head;
-  const bx = -Math.cos(j.a), by = -Math.sin(j.a), nx = -by, ny = bx;          // tentacles trail behind
-  const nT = 5 + (j.traits.seed % 3), L = r * 3.4 * j.traits.fins;
-  g.globalAlpha = fade; g.strokeStyle = `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`; g.lineWidth = S * 1.3; g.lineCap = 'round';
-  for (let k = 0; k < nT; k++) {
-    const off = (k / (nT - 1) - 0.5) * 1.3 * r;
-    g.beginPath();
-    for (let s = 0; s <= 8; s++) {
-      const t = s / 8, wv = Math.sin(j.phase * 1.3 + t * 6 + k) * r * 0.3 * t;
-      const x = j.x + bx * (r * 0.6 + L * t) + nx * (off * (1 - t * 0.4) + wv), y = j.y + by * (r * 0.6 + L * t) + ny * (off * (1 - t * 0.4) + wv);
-      s ? g.lineTo(x, y) : g.moveTo(x, y);
-    }
-    g.stroke();
-  }
-  g.globalAlpha = fade;
-  const gr = g.createRadialGradient(j.x, j.y, 0, j.x, j.y, r);
-  gr.addColorStop(0, `rgb(${Math.min(255, c[0] * 1.5 + 40) | 0},${Math.min(255, c[1] * 1.5 + 40) | 0},${Math.min(255, c[2] * 1.5 + 40) | 0})`);
-  gr.addColorStop(1, `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`);
-  g.fillStyle = gr; g.beginPath(); g.arc(j.x, j.y, r, 0, Math.PI * 2); g.fill();
-  g.globalAlpha = 1;
-}
-
 // ---------- input: hover = adults circle; click an animal = love; click water = food ----------
 let mx = -1e4, my = -1e4, mouseT = -1e9, food = [], hearts = [], bubbles = [], specks = [];
 window.__mouse = (x, y) => { mx = x; my = y; mouseT = performance.now(); };
@@ -521,7 +520,6 @@ function hitTest(x, y) {
     if (a.dead || a.diedAt || !shown(a)) continue;
     const sp = SPECIES[a.kind];
     if (sp.body === 'swim') { for (const p of a.sp) if (Math.hypot(p.x - x, p.y - y) < width(a, p.u) * a.len * 1.4 + 8) return a; }
-    else if (sp.body === 'jelly') { if (Math.hypot(a.x - x, a.y - y) < a.len * 1.6 + 6) return a; }
     else if (sp.body === 'fish') { if (Math.hypot(a.x - x, a.y - y) < 14) return a; }
     else if (Math.abs(a.x - x) < 22 && Math.abs(a.y + a.yo - y) < 16) return a;
   }
@@ -558,7 +556,7 @@ function nearestFood(x, y, maxD, onFloor) {
 }
 function steerSwimmer(a, dt, now, idx) {
   const sp = SPECIES[a.kind], h = a.pts[0];
-  let speed = a.len * sp.speed * a.traits.speed, turnRate = a.kind === 'whale' ? 0.25 : a.kind === 'manta' ? 0.5 : 0.9;
+  let speed = a.len * sp.speed * a.traits.speed, turnRate = a.kind === 'whale' ? 0.25 : 0.9;
   const parent = isBaby(a) && (byId(a.parents[0]) || byId(a.parents[1]));
   if (a.kind === 'whale') {                                        // migrating: cross the tank and leave
     const v = a.visiting; a.tx = v.exit.x; a.ty = v.exit.y + Math.sin(now * 0.0002 + a.id) * H * 0.08;
@@ -600,7 +598,7 @@ function steerSwimmer(a, dt, now, idx) {
   a.a += Math.max(-turnRate * dt, Math.min(turnRate * dt, d));
   a.speed = (a.speed || speed) + (speed - (a.speed || speed)) * Math.min(1, dt * 1.5);
   h.x += Math.cos(a.a) * a.speed * dt; h.y += Math.sin(a.a) * a.speed * dt;
-  a.phase += dt * (a.kind === 'manta' ? 1.6 : a.kind === 'whale' ? 0.9 : 2.2 + a.speed / a.len * 4);
+  a.phase += dt * (a.kind === 'whale' ? 0.9 : 2.2 + a.speed / a.len * 4);
   follow(a);
 }
 function nearestPrey(x, y, maxD) {
@@ -609,21 +607,6 @@ function nearestPrey(x, y, maxD) {
     const d = Math.hypot(f.x - x, f.y + f.yo - y); if (d < bd) { bd = d; best = f; }
   }
   return best;
-}
-function stepJelly(j, dt) {
-  j.phase += dt * 2.4 * j.traits.speed;                          // the bell pulses about every 2.6 s
-  const pulse = Math.max(0, Math.sin(j.phase));
-  j.a += (Math.random() - 0.5) * dt * 0.8;
-  const mx_ = W * 0.08, my_ = H * 0.08;                          // turn back from the edges
-  if (j.x < mx_ || j.x > W - mx_ || j.y < my_ || j.y > floorY - my_) {
-    const want = Math.atan2(H * 0.45 - j.y, W * 0.5 - j.x); let d = want - j.a; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; j.a += d * dt * 0.8;
-  }
-  const parent = isBaby(j) && byId(j.parents[0]);
-  if (parent) { const want = Math.atan2(parent.y - j.y, parent.x - j.x); j.a += Math.sin(want - j.a) * dt * 0.8; }
-  const thrust = pulse * j.len * 1.1;
-  j.vx += Math.cos(j.a) * thrust * dt; j.vy += Math.sin(j.a) * thrust * dt;
-  const damp = Math.pow(0.35, dt); j.vx *= damp; j.vy *= damp;
-  j.x += j.vx * dt; j.y += j.vy * dt;
 }
 const schools = new Map();
 function schoolOf(fam, now) {                                     // a shared wandering goal per school
@@ -743,7 +726,7 @@ function afterDeath(a, dt, now) {
 // ---------- births, and newcomers when a species runs low ----------
 const grownAt = (a, t) => !a.parents.length ? true : (a.len >= a.adultLen * 0.85 || 0.28 + (t - a.born) / (SPECIES[a.kind].grow * 3600000) >= 0.85);
 const related = (a, b) => a.parents.includes(b.id) || b.parents.includes(a.id) || (a.parents.length && a.parents.some(p => b.parents.includes(p)));
-// Who may have young at time t: grown, past their cooldown; pairs must be unrelated. Jellyfish bud alone.
+// Who may have young at time t: grown, past their cooldown; pairs must be unrelated (species with pair: false bud alone).
 function mates(list, t, kind) {
   const sp = SPECIES[kind], cool = sp.cool * 3600000;
   const ready = list.filter(a => a.kind === kind && !a.dead && !a.diedAt && grownAt(a, t) && (a.lastBred == null || t - a.lastBred >= cool));
@@ -757,7 +740,7 @@ function birth(a, b, t) {                                         // t in wall t
   a.lastBred = t; if (b) b.lastBred = t;
   const h = headOf(a);
   for (let i = 0; i < Math.max(1, n); i++) {
-    const adultLen = (a.adultLen + (b || a).adultLen) / 2 * (sp.body === 'swim' || sp.body === 'jelly' ? 0.9 + Math.random() * 0.2 : 1);
+    const adultLen = (a.adultLen + (b || a).adultLen) / 2 * (sp.body === 'swim' ? 0.9 + Math.random() * 0.2 : 1);
     const len = Math.min(adultLen, adultLen * (0.28 + (wall() - t) / (sp.grow * 3600000)));
     kids.push(makeAnimal({ name: newName(), kind: a.kind, depth: a.depth, family: a.family, gen: Math.max(a.gen, b ? b.gen : 0) + 1,
       parents: b ? [a.id, b.id] : [a.id], born: t, len, adultLen, traits: inheritTraits(a.traits, b && b.traits),
@@ -789,7 +772,7 @@ function breed() {
 }
 function census() {                                               // one newcomer group per check, so arrivals are spread out
   const sharksAlive = ofKind('hammer').length + ofKind('leopard').length;
-  for (const kind of ['fish', 'jelly', 'manta', 'crab', 'shrimp', 'whale', 'hammer', 'leopard']) {
+  for (const kind of ['fish', 'crab', 'shrimp', 'whale', 'hammer', 'leopard']) {
     if (isShark({ kind }) ? sharksAlive >= 3 : ofKind(kind).length >= SPECIES[kind].min) continue;
     const fam = foundFamily(kind, true);
     if (kind === 'whale') nextVisit = Math.min(nextVisit, performance.now() + 60000);
@@ -823,17 +806,31 @@ let last = performance.now(), lastDraw = 0, frames = 0, nextBreed = performance.
 window.__frames = () => frames;
 window.__animals = animals; window.__sharks = animals;
 
-function rasterTiles(fd, decay) {
-  const grey = HI('grey'), t = performance.now();
+// Turn the two tiny canvases (living, and bodies falling apart) into tiles. Each cell gets a key
+// (hue, level, glyph, faint); only cells whose key changed since the last frame are cleared and redrawn.
+function updateTiles(fd, dd, decay) {
+  const grey = HI('grey'), t = performance.now(), G = GLYPHS.length;
   for (let cy = 0, i = 0; cy < rows; cy++) for (let cx = 0; cx < cols; cx++, i++) {
+    let key = 0, hue = 0, lvl = 0, gl = 0, faint = false;
     const a = fd[i * 4 + 3] / 255;
-    if (a < 0.3) continue;
-    if (decay && cellRand[i] < decay[i]) continue;               // decaying cells drop out
-    const r = fd[i * 4], g = fd[i * 4 + 1], b = fd[i * 4 + 2];
-    const lum = (0.3 * r + 0.59 * g + 0.11 * b) / 255;
-    const lvl = Math.max(0, Math.min(LEVELS - 1, Math.floor(lum * a * 7.2)));
-    tile(decay ? grey : nearestHue(r, g, b), decay ? Math.max(0, lvl - 1) : lvl, glyphFor(lvl, i, t), cx * S, cy * S, a < 0.6 ? 0.6 : 1);
+    if (a >= 0.3) {
+      const r = fd[i * 4], g = fd[i * 4 + 1], b = fd[i * 4 + 2];
+      lvl = Math.max(0, Math.min(LEVELS - 1, Math.floor((0.3 * r + 0.59 * g + 0.11 * b) / 255 * a * 7.2)));
+      hue = nearestHue(r, g, b); gl = glyphFor(lvl, i, t); faint = a < 0.6;
+    } else if (dd && dd[i * 4 + 3] >= 77 && !(decay && cellRand[i] < decay[i])) {   // bodies behind the living
+      const ad = dd[i * 4 + 3] / 255, r = dd[i * 4], g = dd[i * 4 + 1], b = dd[i * 4 + 2];
+      const l0 = Math.max(0, Math.min(LEVELS - 1, Math.floor((0.3 * r + 0.59 * g + 0.11 * b) / 255 * ad * 7.2)));
+      hue = grey; lvl = Math.max(0, l0 - 1); gl = glyphFor(l0, i, t); faint = ad < 0.6;
+    } else { if (prevKey[i]) { prevKey[i] = 0; tlCtx.clearRect(cx * S, cy * S, S, S); } continue; }
+    key = 1 + ((((hue * LEVELS + lvl) * G + gl) << 1) | (faint ? 1 : 0));
+    if (key === prevKey[i]) continue;
+    prevKey[i] = key;
+    tlCtx.clearRect(cx * S, cy * S, S, S);
+    tlCtx.globalAlpha = faint ? 0.6 : 1;
+    tlCtx.drawImage(atlas, gl * T, (hue * LEVELS + lvl) * T, T, T, cx * S, cy * S, S, S);
+    perf.draws++; perf.tiles++;
   }
+  tlCtx.globalAlpha = 1;
 }
 const FISH_GLYPH = (vx, vy) => Math.abs(vx) > Math.abs(vy) ? (vx > 0 ? '>' : '<') : (vy > 0 ? 'v' : '^');
 
@@ -841,6 +838,7 @@ function frame(now) {
   requestAnimationFrame(frame);
   if (now - lastDraw < 1000 / FPS - 2) return;
   lastDraw = now; frames++;
+  const t0 = performance.now();
   const dt = Math.min(0.1, (now - last) / 1000); last = now;
 
   for (const a of [...animals]) {                                 // ageing, hunger, growth
@@ -856,7 +854,6 @@ function frame(now) {
   live.forEach((a, i) => {
     const body = SPECIES[a.kind].body;
     if (body === 'swim') { if (shown(a)) steerSwimmer(a, dt, now, i); }
-    else if (body === 'jelly') stepJelly(a, dt);
     else if (body === 'fish') stepFish(a, dt, now, fishes, hunters);
     else stepCrawler(a, dt, now);
   });
@@ -870,10 +867,9 @@ function frame(now) {
   dctx.setTransform(1, 0, 0, 1, 0, 0); dctx.clearRect(0, 0, cols, rows); dctx.setTransform(1 / S, 0, 0, 1 / S, 0, 0);
   const bodies = animals.filter(a => a.dead && a.dead.stage !== 'fade' && a.pts);
   for (const a of animals) {
-    if (!shown(a) || (a.dead && a.dead.stage === 'fade' && a.kind !== 'jelly')) continue;
+    if (!shown(a) || (a.dead && a.dead.stage === 'fade')) continue;
     const body = SPECIES[a.kind].body;
     if (body === 'swim') drawSwimmer(a.dead ? dctx : fctx, a, a.sp);
-    else if (body === 'jelly') drawJelly(fctx, a);
   }
   const fd = fctx.getImageData(0, 0, cols, rows).data;
   let decayMap = null, dd = null;
@@ -891,7 +887,8 @@ function frame(now) {
   }
 
   // slow layer: light from above and the sand (~5 fps)
-  if (now - lastBg > 200) {
+  if (now - lastBg > 500) {
+    const bgDt = Math.min(2, (now - lastBg) / 1000);
     lastBg = now; ctx = bgCtx; ctx.globalAlpha = 1; ctx.clearRect(0, 0, W, H);
     for (let i = 0; i < 3; i++) {
       const x = W * (0.5 + 0.45 * Math.sin(now * 0.00005 * (i + 1) + i * 2)), y = H * (0.3 + 0.2 * Math.cos(now * 0.00007 * (i + 2) + i));
@@ -905,15 +902,23 @@ function frame(now) {
       tile(sand, r < 0.5 ? 0 : 1, GI[r < 0.3 ? '.' : r < 0.6 ? ',' : r < 0.85 ? ':' : 'o'], cx * S, y, 0.75);
       if (r < 0.35) tile(sand, 0, GI[r < 0.15 ? '.' : ','], cx * S, y - S, 0.45);
     }
+    for (const s of specks) {                                       // plankton drifting slowly
+      s.x += s.v * bgDt; if (s.x > W + S) s.x = -S;
+      ctx.globalAlpha = s.a; ctx.drawImage(bubbleAtlas, 3 * T, 0, T, T, Math.floor(s.x / S) * S, Math.floor(s.y / S) * S, S, S);
+    }
+    ctx.font = '500 11px Menlo, Consolas, monospace'; ctx.textBaseline = 'middle';
+    const recent = log.slice(-5);                                   // recent events, bottom-left
+    recent.forEach((l, i) => {
+      const fresh = (now - l.t) / 1000 < 8 ? 1 : 0.5;
+      ctx.globalAlpha = (0.25 + 0.12 * (i + 1)) * fresh; ctx.fillStyle = '#cfd6d8';
+      ctx.fillText(l.line, 28, H - 44 - (recent.length - 1 - i) * 15);
+    });
+    ctx.globalAlpha = 1;
     ctx = mainCtx;
   }
 
   ctx.globalAlpha = 1; ctx.clearRect(0, 0, W, H);
-  for (const s of specks) {
-    s.x += s.v * dt; if (s.x > W + S) s.x = -S;
-    ctx.globalAlpha = s.a; ctx.drawImage(bubbleAtlas, 3 * T, 0, T, T, Math.floor(s.x / S) * S, Math.floor(s.y / S) * S, S, S);
-  }
-  if (dd) rasterTiles(dd, decayMap);                               // bodies behind the living
+  updateTiles(fd, dd, decayMap);
   const gold = HI('gold');                                         // food: sinks; food from a body first bobs up
   food = food.filter(f => now < f.until);
   for (const f of food) {
@@ -933,7 +938,6 @@ function frame(now) {
       else { tile(pink, lv - 1, GI['~'], c.x - d * S, y, al); tile(pink, lv, GI[d > 0 ? '>' : '<'], c.x, y, al); }
     }
   }
-  rasterTiles(fd, null);
   for (const a of animals) {                                       // family colour along each living shark's back
     if (a.dead || !isShark(a)) continue;
     const fh = HI(famOf(a).hue || 'teal');
@@ -961,15 +965,11 @@ function frame(now) {
     ctx.globalAlpha = Math.min(1, (a.tagUntil - now) / 800) * 0.9; ctx.fillStyle = '#f2d9e6';
     ctx.fillText(`${a.name} · ${SPECIES[a.kind].label} · gen ${a.gen} · ${famOf(a).name || ''} · ${fmtAge(wall() - a.born)}${looks ? ' · ' + looks : ''} ${'♥'.repeat(Math.min(a.love, 5))}`, p.x + 16, (p.y + (a.yo || 0)) - 16);
   }
-  const recent = log.slice(-5);                                    // recent events, bottom-left
-  recent.forEach((l, i) => {
-    const fresh = (now - l.t) / 1000 < 8 ? 1 : 0.5;
-    ctx.globalAlpha = (0.25 + 0.12 * (i + 1)) * fresh; ctx.fillStyle = '#cfd6d8';
-    ctx.fillText(l.line, 28, H - 44 - (recent.length - 1 - i) * 15);
-  });
   ctx.globalAlpha = 1;
   paintWords();
+  perf.frames++; perf.js += performance.now() - t0;
 }
+window.__perf = () => ({ fps: FPS, jsMsPerFrame: +(perf.js / perf.frames).toFixed(2), drawsPerFrame: Math.round(perf.draws / perf.frames), tilesPerFrame: Math.round(perf.tiles / perf.frames), dotsPerFrame: Math.round(perf.dotsDrawn / perf.frames), dots: dots.length });
 requestAnimationFrame(frame);
 })();
 </script>

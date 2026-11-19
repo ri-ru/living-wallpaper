@@ -8,6 +8,7 @@
 import Cocoa
 import WebKit
 import SQLite3
+import IOKit.ps
 
 func log(_ s: String) { FileHandle.standardError.write((s + "\n").data(using: .utf8)!) }
 let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -125,6 +126,8 @@ final class Host: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in self?.pollMouse() }
         NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] _ in self?.sendClick(NSEvent.mouseLocation) }
         Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.watchQuote() }
+        Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in self?.checkPower() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.checkPower() }
         // Sleep and wake: save before sleeping; after waking (or unlocking, or switching users back) the web
         // content process may have been suspended or killed, so rebuild the windows from the saved tank.
         let ws = NSWorkspace.shared.notificationCenter
@@ -178,6 +181,7 @@ final class Host: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     }
 
     @objc func build() {
+        if paused { return }                                  // on battery: stay off until power returns
         for (w, _) in windows { w.orderOut(nil) }
         windows.removeAll()
         let web = opts.page.deletingLastPathComponent()
@@ -234,11 +238,43 @@ final class Host: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         }
     }
 
+    // ---- battery: on battery power the animation stops completely; the desktop keeps the still words picture ----
+    var paused = false
+    func onBattery() -> Bool {
+        if let f = opts.fakePowerFile {                       // tests: a file containing "battery" or "ac"
+            return ((try? String(contentsOfFile: f, encoding: .utf8)) ?? "").contains("battery")
+        }
+        guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let type = IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue() else { return false }
+        return (type as String) == kIOPSBatteryPowerValue
+    }
+    func checkPower() {
+        guard opts.pauseOnBattery, opts.snapDir == nil || opts.fakePowerFile != nil else { return }
+        let battery = onBattery()
+        if battery && !paused {
+            paused = true
+            log("on battery: pausing")
+            windows.forEach { $0.1.evaluateJavaScript("window.__save && window.__save()", completionHandler: nil) }
+            updateLockScreen { [weak self] in                 // leave the still words picture on the desktop
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    guard let self = self, self.paused else { return }
+                    for (w, v) in self.windows { v.removeFromSuperview(); w.orderOut(nil) }
+                    self.windows.removeAll()                   // the web view and its processes are gone: no CPU at all
+                }
+            }
+        } else if !battery && paused {
+            paused = false
+            log("on power: resuming")
+            build()
+        }
+    }
+
     // ---- lock screen ----
     var lockFlip = false
-    func updateLockScreen() {
-        guard let v = windows.first?.1 else { return }
+    func updateLockScreen(then done: (() -> Void)? = nil) {
+        guard let v = windows.first?.1 else { done?(); return }
         v.evaluateJavaScript("window.__quoteImage && window.__quoteImage()") { [weak self] r, _ in
+            defer { done?() }
             guard let self = self, let dataURL = r as? String, let comma = dataURL.firstIndex(of: ","),
                   let png = Data(base64Encoded: String(dataURL[dataURL.index(after: comma)...])) else { return }
             saveOriginalWallpapers()
@@ -299,6 +335,7 @@ func restoreOriginalWallpapers() {
 struct Options {
     var page: URL, db: String, query: String, quote: String?, quoteFile: URL
     var snapDir: String?, snapTimes: [Double], evals: [(Double, String)], windowed: Bool, lockscreen: Bool
+    var pauseOnBattery: Bool, fakePowerFile: String?
 }
 var args = Array(CommandLine.arguments.dropFirst())
 func take(_ flag: String) -> String? {
@@ -323,7 +360,8 @@ let opts = Options(page: page,
                    quoteFile: take("--quote-file").map { URL(fileURLWithPath: $0) } ?? support.appendingPathComponent("quote.txt"),
                    snapDir: take("--snapshot"),
                    snapTimes: (take("--at") ?? "3").split(separator: ",").compactMap { Double($0) },
-                   evals: evals, windowed: flag("--windowed"), lockscreen: !flag("--no-lockscreen"))
+                   evals: evals, windowed: flag("--windowed"), lockscreen: !flag("--no-lockscreen"),
+                   pauseOnBattery: !flag("--keep-on-battery"), fakePowerFile: take("--fake-power"))
 if flag("--restore-wallpaper") { restoreOriginalWallpapers(); exit(0) }   // used by uninstall
 
 let app = NSApplication.shared
