@@ -36,6 +36,27 @@ CREATE TABLE IF NOT EXISTS events (
   text     TEXT NOT NULL
 );
 
+-- Each shark's looks. Inherited from both parents with small mutations; never changes after birth.
+CREATE TABLE IF NOT EXISTS shark_traits (
+  shark_id     INTEGER PRIMARY KEY REFERENCES sharks(id),
+  girth        REAL NOT NULL,      -- body width, 1 = average
+  fins         REAL NOT NULL,      -- pectoral fin size
+  tail         REAL NOT NULL,      -- tail fin length
+  head         REAL NOT NULL,      -- hammer width (hammerheads)
+  speed        REAL NOT NULL,      -- cruising speed
+  tint_r       INTEGER NOT NULL,   -- colour shift added to the species colour
+  tint_g       INTEGER NOT NULL,
+  tint_b       INTEGER NOT NULL,
+  variant      TEXT NOT NULL CHECK (variant IN ('common', 'pale', 'dark')),
+  pattern_seed INTEGER NOT NULL    -- spots and marks are drawn from this seed
+);
+
+-- Small key/value store for the tank itself (last_seen_ms: when the wallpaper last ran, for replaying time away).
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT
+);
+
 CREATE INDEX IF NOT EXISTS events_shark   ON events(shark_id);
 CREATE INDEX IF NOT EXISTS sharks_parents ON sharks(parent_a_id, parent_b_id);
 

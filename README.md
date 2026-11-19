@@ -93,7 +93,7 @@ Your previous picture is saved the first time, and uninstalling puts it back. Ru
 | --- | --- |
 | The words | `quote.txt` (above) |
 | Frame rate, cell size | `QUERY="fps=10&cell=12" ./install.sh` (PowerShell: `$env:QUERY="fps=10"; .\install.ps1`) |
-| Lifespan, growth time, population cap, newcomer threshold | constants at the top of `web/index.html`: `LIFE_HOURS`, `GROW_SECONDS`, `MAX_SHARKS`, `MIN_ALIVE` |
+| Lifespan, growth time, birth rate, cooldown, population cap, newcomer threshold | constants at the top of `web/index.html`: `LIFE_HOURS`, `GROW_SECONDS`, `NATURAL_BIRTHS_PER_HOUR`, `BREED_COOLDOWN_HOURS`, `MAX_SHARKS`, `MIN_ALIVE` |
 | Sinking and decay | `SINK_SPEED`, `REST_MS`, `DECAY_MS` in `web/index.html` |
 | Colours | `HUES`, `FAMILY_HUES` in `web/index.html` |
 | Shark shape | `width()` and `drawShark()` in `web/index.html` |
@@ -107,12 +107,15 @@ Changes to `web/` show up after a restart:
 ## Life in the tank
 
 - **Families.** The tank opens with four founding families. Every shark has a name, a generation and two parents. A few tiles along its back show its family colour.
-- **Babies** swim beside a parent and reach adult size in about 15 minutes. Food speeds that up.
-- **Breeding.** Two well-fed adults of the same species can have a baby, more often if you have loved them. Siblings never pair. Breeding stops at 24 living sharks.
-- **Death.** Each shark lives 6–12 hours of real time. Then it turns grey, sinks, rests on the sand, and crumbles into food pellets.
+- **Every shark looks a little different.** Each one has its own build (slender to stout), fin size, tail length, hammer width, swimming speed, colour tint and spot pattern. Rarely, one is born **pale** or **dark**. Children inherit a blend of both parents, with small mutations. Click a shark to see its traits on the name tag, for example `Tiki · gen 3 · Anfis · 2d4h · pale, broad-finned ♥`.
+- **Growing up.** Babies swim beside a parent and take about 36 hours to grow up. Food speeds that up a little.
+- **Children.** Grown sharks of the same species pair up on their own, about 3–4 births a day across the tank. Each adult has at most one child a day. Well-fed sharks you have loved are likelier to have children. Siblings never pair. Breeding stops at 24 living sharks.
+- **A week of life.** Each shark lives 6–8 days of real time. When it dies, it turns grey, sinks, rests on the sand, and crumbles into food for the others.
+- **Time away keeps counting.** When the computer sleeps or is off, the tank replays the missing time when the wallpaper starts again. Sharks born while you were away appear at the age they would be now. Sharks whose time ran out are recorded as dying at that moment, quietly, without a wave of sinking bodies. The log shows these events as "while you were away: …".
 - **Newcomers.** If fewer than 3 sharks are alive, a new family drifts in from the edge.
 - **Feasting.** Sharks that swim through the words get a little less hungry.
-- **The log** in the bottom-left corner shows the latest births, meals, loves and deaths.
+
+All of these numbers are constants at the top of `web/index.html`.
 
 ## The family tree (SQLite)
 
@@ -126,7 +129,9 @@ Changes to `web/` show up after a restart:
 | --- | --- |
 | `families` | `id, name, hue, founded_at` |
 | `sharks` | `id, name, species, family_id → families, generation, parent_a_id → sharks, parent_b_id → sharks, born_at, lifespan_hours, died_at, length, adult_length, fullness, love` |
+| `shark_traits` | `shark_id → sharks, girth, fins, tail, head, speed, tint_r, tint_g, tint_b, variant (common/pale/dark), pattern_seed` |
 | `events` | `id, at, kind, shark_id → sharks, text`. Kinds: `opened`, `arrived`, `born`, `fed`, `loved`, `died`, `returned`. |
+| `meta` | `last_seen_ms` (when the wallpaper last ran, for replaying time away) |
 | `babies` (view) | every shark that has parents, with the parents' and family's names |
 | `alive` (view) | sharks that have not died |
 

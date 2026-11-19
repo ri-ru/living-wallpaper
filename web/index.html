@@ -22,8 +22,11 @@ let QUOTE = P.get('quote') || window.__quote || 'Evil is whatever distracts.';
 const S = +P.get('cell') || 10;            // shark / aquarium cell size, css px
 const FPS = +P.get('fps') || 15;           // measured on an M4 MacBook Air (13"): ~32% of one core at 15 fps, ~42% at 20
 const MAX_SHARKS = 24;                     // my guess, not measured: GPU cost grows with shark area; raise it and re-measure
-const GROW_SECONDS = 15 * 60;              // design choice: a baby reaches adult size in ~15 minutes
-const LIFE_HOURS = [6, 12];                // design choice: each shark lives 6-12 hours of real time
+const GROW_SECONDS = 36 * 3600;            // design choice: a baby reaches adult size in ~36 hours
+const LIFE_HOURS = [6 * 24, 8 * 24];       // design choice: each shark lives 6-8 days of real time
+const NATURAL_BIRTHS_PER_HOUR = 0.15;      // design choice: ~3-4 births a day across the tank without help
+const BREED_COOLDOWN_HOURS = 24;           // design choice: an adult has at most one child a day
+const CATCHUP_STEP_MIN = 20;               // replaying time away (sleep, shutdown) in 20-minute steps
 const MIN_ALIVE = 3;                       // design choice: below this, a new family drifts in
 const TIME_SCALE = +P.get('timescale') || 1;   // tests speed up ageing
 // Host bridge. Every host (macOS, Windows, Linux) accepts one message: a JSON transaction of SQL statements.
@@ -140,7 +143,7 @@ function updateDots(dt) {
   for (const sh of sharks) {                                    // living sharks plough through and feast on the words
     if (sh.dead) continue;
     let ate = 0;
-    for (let i = 0; i < sh.sp.length; i += 3) { const p = sh.sp[i]; ate += kick(p.x, p.y, width(sh.kind, p.u) * sh.len * 1.6 + 8, 26 * sh.depth); }
+    for (let i = 0; i < sh.sp.length; i += 3) { const p = sh.sp[i]; ate += kick(p.x, p.y, width(sh, p.u) * sh.len * 1.6 + 8, 26 * sh.depth); }
     if (ate) sh.full = Math.min(1, sh.full + ate * 0.000004);
   }
   let moving = false;
@@ -175,9 +178,11 @@ const newName = () => {
 const FAMILY_HUES = ['teal', 'pink', 'violet', 'gold'];
 let families = [], log = [], nextId = 1;
 const clock = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-function event(kind, text, shark) {
-  log.push({ t: performance.now(), line: `${clock()}  ${text}` }); if (log.length > 300) log.shift();
-  if (HOST) HOST([['INSERT INTO events (kind, shark_id, text) VALUES (?, (SELECT id FROM sharks WHERE id = ?), ?)', [kind, shark ? shark.id : null, text]]]);
+function event(kind, text, shark, atMs) {                    // atMs: real time it happened (default: now)
+  log.push({ t: performance.now(), line: `${atMs ? hhmm(atMs) : clock()}  ${text}` }); if (log.length > 300) log.shift();
+  if (HOST) HOST([[`INSERT INTO events (at, kind, shark_id, text)
+                    VALUES (coalesce(datetime(? / 1000, 'unixepoch', 'localtime'), datetime('now', 'localtime')), ?, (SELECT id FROM sharks WHERE id = ?), ?)`,
+                   [atMs ?? null, kind, shark ? shark.id : null, text]]]);
 }
 let lastSave = 0;
 function save(force) {
@@ -194,10 +199,45 @@ function save(force) {
       [s.id, s.name, s.kind === 'hammer' ? 'hammerhead' : 'leopard', s.family, s.gen, s.parents[0] ?? null, s.parents[1] ?? null,
        born, born, s.lifespan / 3600000, s.diedAt || null, s.len, s.adultLen, s.depth, s.full, s.love]]);
   }
+  for (const s of sharks) {                                      // traits never change, so insert once
+    const t = s.traits;
+    tx.push([`INSERT INTO shark_traits (shark_id, girth, fins, tail, head, speed, tint_r, tint_g, tint_b, variant, pattern_seed)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(shark_id) DO NOTHING`,
+      [s.id, t.girth, t.fins, t.tail, t.head, t.speed, t.tint[0], t.tint[1], t.tint[2], t.variant, t.seed]]);
+  }
+  tx.push(["INSERT INTO meta (key, value) VALUES ('last_seen_ms', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [String(Date.now())]]);
   HOST(tx);
 }
-const fmtAge = ms => { const m = Math.round(ms / 60000); return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`; };
-const localStamp = () => { const d = new Date(), z = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`; };
+const fmtAge = ms => { const m = Math.round(ms / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  return m < 60 ? `${m}m` : h < 24 ? `${h}h${String(m % 60).padStart(2, '0')}m` : `${d}d${h % 24}h`; };
+const localStamp = (ms = Date.now()) => { const d = new Date(ms), z = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`; };
+const hhmm = ms => { const d = new Date(ms), z = n => String(n).padStart(2, '0'); return `${z(d.getHours())}:${z(d.getMinutes())}`; };
+
+// ---------- individual looks: inherited from both parents, with small mutations ----------
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const gauss = () => (Math.random() + Math.random() + Math.random() - 1.5) / 1.5;   // roughly -1..1, peaked at 0
+function seeded(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function randomTraits() {
+  const r = Math.random();
+  return { girth: 1 + gauss() * 0.15, fins: 1 + gauss() * 0.2, tail: 1 + gauss() * 0.2, head: 1 + gauss() * 0.15, speed: 1 + gauss() * 0.12,
+    tint: [0, 0, 0].map(() => Math.round(gauss() * 18)), variant: r < 0.04 ? 'pale' : r < 0.08 ? 'dark' : 'common', seed: Math.random() * 2 ** 31 | 0 };
+}
+function inheritTraits(a, b) {
+  const mix = k => clamp((a[k] + b[k]) / 2 + gauss() * 0.06, 0.7, 1.35);
+  const variant = Math.random() < 0.03 ? (Math.random() < 0.5 ? 'pale' : 'dark') : (Math.random() < 0.5 ? a.variant : b.variant);
+  return { girth: mix('girth'), fins: mix('fins'), tail: mix('tail'), head: mix('head'), speed: clamp((a.speed + b.speed) / 2 + gauss() * 0.04, 0.8, 1.25),
+    tint: a.tint.map((t, i) => Math.round((t + b.tint[i]) / 2 + gauss() * 6)), variant, seed: Math.random() * 2 ** 31 | 0 };
+}
+function describe(t) {
+  const d = [];
+  if (t.variant !== 'common') d.push(t.variant);
+  if (t.girth > 1.12) d.push('stout'); else if (t.girth < 0.88) d.push('slender');
+  if (t.fins > 1.15) d.push('broad-finned');
+  if (t.tail > 1.15) d.push('long-tailed');
+  if (t.speed > 1.1) d.push('quick'); else if (t.speed < 0.9) d.push('slow');
+  return d.join(', ');
+}
 
 // ---------- sharks ----------
 const N = 26;
@@ -208,7 +248,10 @@ function makeShark(o) {
   const pts = []; for (let i = 0; i < N; i++) pts.push({ x: x - Math.cos(a) * o.len * i / N, y: y - Math.sin(a) * o.len * i / N });
   const sh = Object.assign({ id: nextId++, love: 0, full: 0.5, gen: 1, parents: [], born: wall(), lifespan: lifespan() }, o,
     { pts, a, phase: Math.random() * 10, tx: x, ty: y, tt: 0, orbit: Math.random() * Math.PI * 2, spinUntil: 0, tagUntil: 0, dead: null });
-  sh.spots = sh.kind === 'leopard' ? Array.from({ length: 34 }, () => ({ u: 0.12 + Math.random() * 0.75, s: (Math.random() * 2 - 1) * 0.8, r: 0.35 + Math.random() * 0.5 })) : [];
+  sh.traits = sh.traits || randomTraits();
+  const rr = seeded(sh.traits.seed);                              // the same pattern every time it is loaded
+  const nSpots = sh.kind === 'leopard' ? 20 + (rr() * 28 | 0) : (rr() * 5 | 0);   // hammerheads get a few marks
+  sh.spots = Array.from({ length: nSpots }, () => ({ u: 0.12 + rr() * 0.75, s: (rr() * 2 - 1) * 0.8, r: (sh.kind === 'leopard' ? 0.35 : 0.2) + rr() * 0.5 }));
   sh.sp = spine(sh);
   sharks.push(sh); sharks.sort((p, q) => p.depth - q.depth);
   return sh;
@@ -237,14 +280,47 @@ function restore(t) {                                          // rows from web/
   families = t.families.map(f => ({ id: f.id, name: f.name, hue: f.hue }));
   log = (t.log || []).map(r => ({ t: -1e9, line: `${r.t}  ${r.text}` }));
   nextId = Math.max(1, ...(t.names || []).map(r => r.id + 1));
+  const traits = new Map((t.traits || []).map(r => [r.shark_id, { girth: r.girth, fins: r.fins, tail: r.tail, head: r.head, speed: r.speed,
+    tint: [r.tint_r, r.tint_g, r.tint_b], variant: r.variant, seed: r.pattern_seed }]));
   for (const r of t.sharks) makeShark({ id: r.id, name: r.name, kind: r.species === 'hammerhead' ? 'hammer' : 'leopard', family: r.family_id,
     gen: r.generation, parents: [r.parent_a_id, r.parent_b_id].filter(x => x != null), born: r.born_ms * TIME_SCALE,
-    lifespan: r.lifespan_hours * 3600000, len: r.length, adultLen: r.adult_length, depth: r.depth, full: r.fullness, love: r.love });
+    lifespan: r.lifespan_hours * 3600000, len: r.length, adultLen: r.adult_length, depth: r.depth, full: r.fullness, love: r.love,
+    traits: traits.get(r.id), lastBred: r.last_bred_ms != null ? r.last_bred_ms * TIME_SCALE : null });
   nextId = Math.max(nextId, ...sharks.map(s => s.id + 1));
+  const seen = +(((t.meta || []).find(m => m.key === 'last_seen_ms') || {}).value || 0);
+  if (seen) catchUp(seen * TIME_SCALE, wall());
 }
-function width(kind, u) {
+
+// ---------- time away: replay sleep / shutdown so the tank keeps living ----------
+// Sharks whose lives ended while you were away die quietly at their real time (no wave of corpses);
+// grown sharks have children at the natural rate, and those children appear at the age they would be now.
+function catchUp(from, to) {
+  if (to - from < CATCHUP_STEP_MIN * 60000 * TIME_SCALE) return;
+  const step = Math.max(CATCHUP_STEP_MIN * 60000 * TIME_SCALE, (to - from) / 3000);
+  const pBirth = Math.min(1, NATURAL_BIRTHS_PER_HOUR * step / (3600000 * TIME_SCALE));
+  const away = [];
+  for (let t = from + step; t <= to; t += step) {
+    for (const s of sharks) if (!s.diedAt && s.born + s.lifespan <= t) {
+      const at = (s.born + s.lifespan) / TIME_SCALE;
+      s.diedAt = localStamp(at); s.away = true;
+      away.push([at, 'died', `while you were away: ${s.name} died · gen ${s.gen} · lived ${fmtAge(s.lifespan)}`, s]);
+    }
+    const living = sharks.filter(s => !s.diedAt && s.born <= t);
+    if (living.length < MAX_SHARKS && Math.random() < pBirth) {
+      const pairs = pairsAt(living, t);
+      if (pairs.length) {
+        const [a, b] = pairs[Math.random() * pairs.length | 0], kid = birth(a, b, t);
+        away.push([t / TIME_SCALE, 'born', `while you were away: ${kid.name} was born to ${a.name} & ${b.name} · gen ${kid.gen}`, kid]);
+      }
+    }
+  }
+  save(true);                                                    // kids and deaths first (foreign keys), then the log
+  away.sort((x, y) => x[0] - y[0]).forEach(([at, kind, text, sh]) => event(kind, text, sh, at));
+  for (const s of sharks.filter(s => s.away)) sharks.splice(sharks.indexOf(s), 1);
+}
+function width(sh, u) {
   const body = u < 0.14 ? 0.1 * Math.pow(u / 0.14, 0.55) : 0.1 * Math.pow(1 - (u - 0.14) / 0.86, 1.2) + 0.01;
-  return kind === 'hammer' ? body * 0.95 : body * 0.85;
+  return (sh.kind === 'hammer' ? body * 0.95 : body * 0.85) * (sh.traits ? sh.traits.girth : 1);
 }
 
 // ---------- input: hover = adults circle; click shark = love; click water = food ----------
@@ -255,7 +331,7 @@ window.__click = (x, y) => {
   let hit = null;
   for (const sh of [...sharks].reverse()) {
     if (sh.dead) continue;
-    for (const p of sh.sp) if (Math.hypot(p.x - x, p.y - y) < width(sh.kind, p.u) * sh.len * 1.4 + 8) { hit = sh; break; }
+    for (const p of sh.sp) if (Math.hypot(p.x - x, p.y - y) < width(sh, p.u) * sh.len * 1.4 + 8) { hit = sh; break; }
     if (hit) break;
   }
   if (hit) {
@@ -280,7 +356,7 @@ function follow(sh) {
 }
 function steer(sh, dt, now, idx) {
   const h = sh.pts[0];
-  let speed = sh.len * 0.17, turnRate = 0.9;
+  let speed = sh.len * 0.17 * sh.traits.speed, turnRate = 0.9;
   const parent = isBaby(sh) && (byId(sh.parents[0]) || byId(sh.parents[1]));
   let pellet = null;
   if (sh.full < 0.95 && food.length) {
@@ -293,7 +369,7 @@ function steer(sh, dt, now, idx) {
     if (Math.hypot(pellet.x - h.x, pellet.y - h.y) < sh.len * 0.12 + 12) {
       food.splice(food.indexOf(pellet), 1); sh.full = Math.min(1, sh.full + 0.3);
       if (Math.random() < 0.5) event('fed', `${sh.name} ate${pellet.from ? ' what was left of ' + pellet.from : ''}${isBaby(sh) ? ' (growing)' : ''}`, sh);
-      if (isBaby(sh)) sh.len = Math.min(sh.adultLen, sh.len + sh.adultLen * 0.03);
+      if (isBaby(sh)) sh.len = Math.min(sh.adultLen, sh.len + sh.adultLen * 0.01);
     }
   } else if (parent) {                                                // babies stay near a parent
     const pp = parent.pts[Math.round(N * 0.55)], side = (sh.id % 2 ? 1 : -1);
@@ -364,28 +440,33 @@ function spine(sh) {
 }
 function drawShark(g, sh, sp) {
   const L = sh.len, n = sp.length, dim = (0.45 + 0.55 * sh.depth) * (sh.dead ? 0.75 : 1);
-  const base = sh.dead ? [128, 128, 126] : sh.kind === 'hammer' ? [138, 150, 178] : [170, 155, 120];
+  const tr = sh.traits;
+  let base = sh.kind === 'hammer' ? [138, 150, 178] : [170, 155, 120];
+  base = base.map((c, i) => clamp(c + tr.tint[i], 40, 235));
+  if (tr.variant === 'pale') base = base.map(c => c * 0.4 + 140);
+  if (tr.variant === 'dark') base = base.map(c => c * 0.62);
+  if (sh.dead) base = [128, 128, 126];
   const col = k => `rgb(${base[0] * k * dim | 0},${base[1] * k * dim | 0},${base[2] * k * dim | 0})`;
   const at = u => Math.round(u * (n - 1));
   const fin = (i, side, out, back, root, k) => {
-    const p = sp[i], w = width(sh.kind, p.u) * L;
+    const p = sp[i], w = width(sh, p.u) * L;
     g.fillStyle = col(k); g.beginPath();
     g.moveTo(p.x + p.nx * w * side * 0.8, p.y + p.ny * w * side * 0.8);
     g.lineTo(p.x + p.nx * (w + out * L) * side - p.tx * back * L, p.y + p.ny * (w + out * L) * side - p.ty * back * L);
     g.lineTo(p.x + p.nx * w * side * 0.8 - p.tx * root * L, p.y + p.ny * w * side * 0.8 - p.ty * root * L);
     g.closePath(); g.fill();
   };
-  for (const s of [1, -1]) { fin(at(0.26), s, sh.kind === 'hammer' ? 0.16 : 0.13, 0.14, 0.12, 0.85); fin(at(0.6), s, 0.05, 0.06, 0.06, 0.75); }
+  for (const s of [1, -1]) { fin(at(0.26), s, (sh.kind === 'hammer' ? 0.16 : 0.13) * tr.fins, 0.14 * tr.fins, 0.12, 0.85); fin(at(0.6), s, 0.05, 0.06, 0.06, 0.75); }
   const e = sp[n - 1], e2 = sp[n - 3];
   g.strokeStyle = col(0.75); g.lineWidth = L * 0.02; g.lineCap = 'round';
-  g.beginPath(); g.moveTo(e2.x, e2.y); g.lineTo(e.x - e.tx * L * 0.12 + e.nx * L * 0.05, e.y - e.ty * L * 0.12 + e.ny * L * 0.05); g.stroke();
+  g.beginPath(); g.moveTo(e2.x, e2.y); g.lineTo(e.x - e.tx * L * 0.12 * tr.tail + e.nx * L * 0.05 * tr.tail, e.y - e.ty * L * 0.12 * tr.tail + e.ny * L * 0.05 * tr.tail); g.stroke();
   g.beginPath(); g.moveTo(e2.x, e2.y); g.lineTo(e.x - e.tx * L * 0.06 - e.nx * L * 0.03, e.y - e.ty * L * 0.06 - e.ny * L * 0.03); g.stroke();
   g.fillStyle = col(0.95); g.beginPath();
-  sp.forEach((p, i) => { const w = width(sh.kind, p.u) * L; i ? g.lineTo(p.x + p.nx * w, p.y + p.ny * w) : g.moveTo(p.x + p.nx * w, p.y + p.ny * w); });
-  for (let i = n - 1; i >= 0; i--) { const p = sp[i], w = width(sh.kind, p.u) * L; g.lineTo(p.x - p.nx * w, p.y - p.ny * w); }
+  sp.forEach((p, i) => { const w = width(sh, p.u) * L; i ? g.lineTo(p.x + p.nx * w, p.y + p.ny * w) : g.moveTo(p.x + p.nx * w, p.y + p.ny * w); });
+  for (let i = n - 1; i >= 0; i--) { const p = sp[i], w = width(sh, p.u) * L; g.lineTo(p.x - p.nx * w, p.y - p.ny * w); }
   g.closePath(); g.fill();
   if (sh.kind === 'hammer') {
-    const h = sp[1], hw = L * 0.13, hd = L * 0.035;
+    const h = sp[1], hw = L * 0.13 * tr.head, hd = L * 0.035;
     g.fillStyle = col(0.85); g.beginPath();
     g.moveTo(h.x + h.nx * hw + h.tx * hd * 0.2, h.y + h.ny * hw + h.ty * hd * 0.2);
     g.quadraticCurveTo(h.x + h.tx * hd * 1.6, h.y + h.ty * hd * 1.6, h.x - h.nx * hw + h.tx * hd * 0.2, h.y - h.ny * hw + h.ty * hd * 0.2);
@@ -401,30 +482,47 @@ function drawShark(g, sh, sp) {
     g.beginPath(); g.moveTo(d.x, d.y); g.lineTo(d.x - d.tx * L * 0.1, d.y - d.ty * L * 0.1); g.stroke();
   }
   for (const s of sh.spots) {
-    const p = sp[at(s.u)], w = width(sh.kind, p.u) * L;
+    const p = sp[at(s.u)], w = width(sh, p.u) * L;
     g.fillStyle = `rgb(${62 * dim | 0},${55 * dim | 0},${44 * dim | 0})`; g.beginPath();
     g.arc(p.x + p.nx * w * s.s, p.y + p.ny * w * s.s, w * s.r * 0.5, 0, Math.PI * 2); g.fill();
   }
 }
 
 // ---------- breeding, and newcomers when the tank runs low ----------
+const grownAt = (s, t) => !s.parents.length ? true : (s.len >= s.adultLen * 0.85 || 0.28 + (t - s.born) / (GROW_SECONDS * 1000) >= 0.85);
+const related = (a, b) => a.parents.includes(b.id) || b.parents.includes(a.id) || (a.parents.length && a.parents.some(p => b.parents.includes(p)));
+// Pairs that may have a child at time t: same species, both grown, not related, both past their cooldown.
+function pairsAt(list, t) {
+  const cool = BREED_COOLDOWN_HOURS * 3600000;
+  const ready = list.filter(s => !s.dead && !s.diedAt && grownAt(s, t) && (s.lastBred == null || t - s.lastBred >= cool));
+  const out = [];
+  for (let i = 0; i < ready.length; i++) for (let j = i + 1; j < ready.length; j++)
+    if (ready[i].kind === ready[j].kind && !related(ready[i], ready[j])) out.push([ready[i], ready[j]]);
+  return out;
+}
+function birth(a, b, t) {                                        // t in wall time; may be in the past (catch-up)
+  const adultLen = (a.adultLen + b.adultLen) / 2 * (0.9 + Math.random() * 0.2);
+  const len = Math.min(adultLen, adultLen * (0.28 + (wall() - t) / (GROW_SECONDS * 1000)));
+  a.lastBred = b.lastBred = t;
+  const near = !a.dead && a.pts ? a.pts[10] : null;
+  return makeShark({ name: newName(), kind: a.kind, depth: a.depth, family: a.family, gen: Math.max(a.gen, b.gen) + 1, parents: [a.id, b.id],
+    born: t, len, adultLen, traits: inheritTraits(a.traits, b.traits), x: near ? near.x : undefined, y: near ? near.y : undefined });
+}
 function breed() {
-  if (alive().length >= MAX_SHARKS) return;
-  const adults = alive().filter(s => !isBaby(s) && s.full > 0.6);
-  for (let i = 0; i < adults.length; i++) for (let j = i + 1; j < adults.length; j++) {
-    const a = adults[i], b = adults[j];
-    if (a.kind !== b.kind || a.parents.includes(b.id) || b.parents.includes(a.id)) continue;
-    if (a.parents.length && a.parents.some(p => b.parents.includes(p))) continue;          // no siblings
-    if (Math.random() > 0.25 + 0.1 * Math.min(a.love, b.love)) continue;
-    const gen = Math.max(a.gen, b.gen) + 1;
-    a.full -= 0.4; b.full -= 0.4;
-    const kid = makeShark({ name: newName(), kind: a.kind, depth: a.depth, family: a.family, gen, parents: [a.id, b.id],
-      len: a.adultLen * 0.28, adultLen: (a.adultLen + b.adultLen) / 2 * (0.9 + Math.random() * 0.2), x: a.pts[10].x, y: a.pts[10].y });
-    save(true);
-    event('born', `${kid.name} was born to ${a.name} & ${b.name} · gen ${gen} · ${(families.find(f => f.id === a.family) || {}).name || ''}`, kid);
-    for (let k = 0; k < 8; k++) hearts.push({ x: kid.pts[0].x + (Math.random() - .5) * 30, y: kid.pts[0].y, v: 20 + Math.random() * 30, w: Math.random() * 6, life: 3 });
-    return;
-  }
+  const living = alive();
+  if (living.length >= MAX_SHARKS) return;
+  const pairs = pairsAt(living, wall());
+  if (!pairs.length) return;
+  let pick = null;
+  for (const [a, b] of pairs)                                    // well fed and loved pairs are likelier
+    if (a.full > 0.8 && b.full > 0.8 && Math.random() < 0.01 + 0.004 * Math.min(a.love, b.love, 10)) { pick = [a, b]; break; }
+  if (!pick && Math.random() < NATURAL_BIRTHS_PER_HOUR * 20 * TIME_SCALE / 3600) pick = pairs[Math.random() * pairs.length | 0];
+  if (!pick) return;
+  const [a, b] = pick, kid = birth(a, b, wall());
+  a.full = Math.max(0, a.full - 0.3); b.full = Math.max(0, b.full - 0.3);
+  save(true);
+  event('born', `${kid.name} was born to ${a.name} & ${b.name} · gen ${kid.gen} · ${(families.find(f => f.id === a.family) || {}).name || ''}`, kid);
+  for (let k = 0; k < 8; k++) hearts.push({ x: kid.pts[0].x + (Math.random() - .5) * 30, y: kid.pts[0].y, v: 20 + Math.random() * 30, w: Math.random() * 6, life: 3 });
 }
 function newcomers() {
   if (alive().length >= MIN_ALIVE) return;
@@ -564,7 +662,8 @@ function frame(now) {
   for (const sh of sharks) if (now < sh.tagUntil) {                     // name tags of loved sharks
     const p = sh.sp[0], fam = families.find(f => f.id === sh.family) || {};
     ctx.globalAlpha = Math.min(1, (sh.tagUntil - now) / 800) * 0.9; ctx.fillStyle = '#f2d9e6';
-    ctx.fillText(`${sh.name} · gen ${sh.gen} · ${fam.name || ''} · ${fmtAge(wall() - sh.born)} ${'♥'.repeat(Math.min(sh.love, 5))}`, p.x + 16, p.y - 16);
+    const looks = describe(sh.traits);
+    ctx.fillText(`${sh.name} · gen ${sh.gen} · ${fam.name || ''} · ${fmtAge(wall() - sh.born)}${looks ? ' · ' + looks : ''} ${'♥'.repeat(Math.min(sh.love, 5))}`, p.x + 16, p.y - 16);
   }
   const recent = log.slice(-5);                                         // recent events, bottom-left
   recent.forEach((l, i) => {
