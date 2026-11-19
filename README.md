@@ -1,10 +1,10 @@
 # Living Wallpaper
 
-A live aquarium for your macOS desktop, drawn in ASCII.
+A live ASCII aquarium for your desktop, on **macOS, Windows and Linux**.
 
-Hammerhead and leopard sharks swim behind your desktop icons. They are made of tiny monospace tiles, and they swim through a line of text: *"Evil is whatever distracts."* When a shark passes, the letters scatter and then settle back.
+Hammerhead and leopard sharks swim behind your desktop icons. They're made of tiny monospace tiles, and they swim through a line of text, *"Evil is whatever distracts."*, tearing up the letters, which settle back afterwards. The text is yours to change.
 
-The sharks live in families. They have babies, grow up, get hungry, die, and sink to the sand, where they crumble into food for the others. The whole family tree is saved in a SQLite database.
+The sharks live in families. They have babies, grow up, get hungry, die, and sink to the sand, where they crumble into food for the others. The whole family tree is kept in a SQLite database.
 
 ![Living Wallpaper preview](docs/preview.gif)
 
@@ -13,91 +13,152 @@ The sharks live in families. They have babies, grow up, get hungry, die, and sin
 | You do | What happens |
 | --- | --- |
 | Move the cursor over the desktop | Adult sharks swim over and circle it. |
-| Click open water | Food pellets sink. Hungry sharks (babies too) race for them. |
-| Click a shark | You love it. Hearts rise, it does a happy swirl, and its name tag shows: `name · gen · family · age ♥`. |
-| Do nothing | Life goes on. Babies grow, adults pair up, the old ones die. |
-
-## Life in the tank
-
-- **Families.** The tank opens with four founding families. Every shark has a name, a generation and two parents. A few tiles along each shark's back show its family colour.
-- **Babies** swim beside a parent and reach adult size in about 15 minutes. Food makes them grow faster.
-- **Breeding.** Two well-fed adults of the same species can have a baby, more often if you have loved them. Siblings never pair. The tank stops breeding at 24 living sharks.
-- **Death.** Each shark lives 6–12 hours of real time. Then it turns grey, sinks, rests on the sand, and falls apart tile by tile into food pellets.
-- **Newcomers.** If fewer than 3 sharks are alive, a new family drifts in from the edge.
-- **The log** in the bottom-left corner shows the last few births, meals, loves and deaths.
+| Click open water | Food pellets sink. Hungry sharks, babies too, race for them. |
+| Click a shark | You love it. Hearts rise, it does a happy swirl, and its name tag shows (`name · gen · family · age ♥`). |
+| Edit `quote.txt` | The words change on the wallpaper within 2 seconds. |
+| Do nothing | Life goes on. Babies grow, adults pair up, the old die and become food. |
 
 ## Install
-
-You need macOS 13 or later and the Xcode Command Line Tools (`xcode-select --install`).
 
 ```sh
 git clone https://github.com/ri-ru/living-wallpaper.git
 cd living-wallpaper
-./install.sh
 ```
 
-`install.sh` builds a small app, `build/LivingWallpaper.app`. It also adds a LaunchAgent, so the wallpaper starts at login and restarts if it crashes. There is no Dock icon and no menu-bar item.
+| OS | Needs | Install | Remove |
+| --- | --- | --- | --- |
+| **macOS** 13+ | Xcode Command Line Tools (`xcode-select --install`) | `./install.sh` | `./uninstall.sh` |
+| **Windows** 10/11 | [.NET 8 SDK](https://dotnet.microsoft.com/download) (`winget install Microsoft.DotNet.SDK.8`); WebView2 is built into Windows 11 | `.\install.ps1` in PowerShell | `.\uninstall.ps1` |
+| **Linux** | Python 3, GTK 3, WebKitGTK; optionally gtk-layer-shell (see below) | `./install.sh` | `./uninstall.sh` |
 
-To remove it, run `./uninstall.sh`. It keeps your tank.
+Linux packages:
 
-**Just want to look?** Open `web/index.html` in a browser. Everything works there except saving.
+```sh
+sudo apt install python3-gi gir1.2-webkit2-4.1 gir1.2-gtklayershell-0.1     # Debian, Ubuntu
+sudo dnf install python3-gobject webkit2gtk4.1 gtk-layer-shell               # Fedora
+sudo pacman -S python-gobject webkit2gtk-4.1 gtk-layer-shell                 # Arch
+```
+
+Each installer:
+
+- builds or prepares the host
+- starts the wallpaper now
+- makes it start at every login: a LaunchAgent on macOS, a Startup shortcut on Windows, an XDG autostart entry on Linux
+
+Uninstalling keeps your tank and your quote.
+
+**Just want to look?** Open `web/index.html` in any browser. Everything works except saving. Add `?quote=Your%20words` to the URL to try other words.
+
+### Where it works
+
+| Platform | How it sits behind the icons | Tested |
+| --- | --- | --- |
+| macOS | desktop-level window | ✅ daily use (M4 MacBook Air) + CI |
+| Windows 11 24H2+ | child of Progman below the icon view | CI build and run; not yet on a real 24H2 PC |
+| Windows 10 / 11 before 24H2 | child of the WorkerW behind the icons | CI build and run |
+| KDE Plasma, Sway, Hyprland and other wlroots desktops (Wayland) | layer-shell background layer | not yet on real hardware |
+| X11 desktops (Xfce, Cinnamon, MATE, GNOME on X11 …) | desktop-type window | ✅ Docker (Xvfb) + CI |
+| GNOME on Wayland | desktop-type window through XWayland | not verified |
+
+If you try it somewhere not marked ✅, please open an issue with what you saw and the log file (paths below). The details per OS are in [docs/RESEARCH.md](docs/RESEARCH.md).
+
+## Change the words
+
+The words come from a plain text file that is created on first run:
+
+| OS | `quote.txt` |
+| --- | --- |
+| macOS | `~/Library/Application Support/LivingWallpaper/quote.txt` |
+| Windows | `%APPDATA%\LivingWallpaper\quote.txt` |
+| Linux | `~/.config/living-wallpaper/quote.txt` |
+
+Save the file and the wallpaper shows the new words within 2 seconds. You don't need to restart. Line breaks are kept, so put each line where you want it.
 
 ## Make it yours
 
 | Change | Where |
 | --- | --- |
-| The words | `web/quotes.js` |
-| Frame rate, cell size | `QUERY="fps=10&cell=12" ./install.sh` |
-| Lifespan, growth time, population cap, newcomer threshold | constants at the top of `web/index.html` (`LIFE_HOURS`, `GROW_SECONDS`, `MAX_SHARKS`, `MIN_ALIVE`) |
-| Sinking and decay speed | `SINK_SPEED`, `REST_MS`, `DECAY_MS` in `web/index.html` |
-| Shark and tile colours, family colours | `HUES`, `FAMILY_HUES` in `web/index.html` |
+| The words | `quote.txt` (above) |
+| Frame rate, cell size | `QUERY="fps=10&cell=12" ./install.sh` (PowerShell: `$env:QUERY="fps=10"; .\install.ps1`) |
+| Lifespan, growth time, population cap, newcomer threshold | constants at the top of `web/index.html`: `LIFE_HOURS`, `GROW_SECONDS`, `MAX_SHARKS`, `MIN_ALIVE` |
+| Sinking and decay | `SINK_SPEED`, `REST_MS`, `DECAY_MS` in `web/index.html` |
+| Colours | `HUES`, `FAMILY_HUES` in `web/index.html` |
 | Shark shape | `width()` and `drawShark()` in `web/index.html` |
+| A completely different scene | Replace `web/index.html`. The hosts show any page that follows [the host contract](docs/HOST_PROTOCOL.md). |
 
-After you edit anything in `web/`, restart the wallpaper:
+Changes to `web/` show up after a restart:
 
-```sh
-launchctl kickstart -k gui/$(id -u)/io.github.ri-ru.living-wallpaper
-```
+- macOS: `launchctl kickstart -k gui/$(id -u)/io.github.ri-ru.living-wallpaper`
+- Windows and Linux: run the installer again
+
+## Life in the tank
+
+- **Families.** The tank opens with four founding families. Every shark has a name, a generation and two parents. A few tiles along its back show its family colour.
+- **Babies** swim beside a parent and reach adult size in about 15 minutes. Food speeds that up.
+- **Breeding.** Two well-fed adults of the same species can have a baby, more often if you have loved them. Siblings never pair. Breeding stops at 24 living sharks.
+- **Death.** Each shark lives 6–12 hours of real time. Then it turns grey, sinks, rests on the sand, and crumbles into food pellets.
+- **Newcomers.** If fewer than 3 sharks are alive, a new family drifts in from the edge.
+- **Feasting.** Sharks that swim through the words get a little less hungry.
+- **The log** in the bottom-left corner shows the latest births, meals, loves and deaths.
 
 ## The family tree (SQLite)
 
-Everything is saved in `~/Library/Application Support/LivingWallpaper/tank.sqlite`:
+| OS | `tank.sqlite` |
+| --- | --- |
+| macOS | `~/Library/Application Support/LivingWallpaper/` |
+| Windows | `%APPDATA%\LivingWallpaper\` |
+| Linux | `~/.local/share/living-wallpaper/` |
 
 | Table / view | Contents |
 | --- | --- |
 | `families` | `id, name, hue, founded_at` |
 | `sharks` | `id, name, species, family_id → families, generation, parent_a_id → sharks, parent_b_id → sharks, born_at, lifespan_hours, died_at, length, adult_length, fullness, love` |
-| `events` | `id, at, kind, shark_id → sharks, text`. The kinds are `opened`, `arrived`, `born`, `fed`, `loved`, `died` and `returned`. |
-| `babies` (view) | Every shark that has parents, with the parents' names and the family name. |
-| `alive` (view) | Sharks that have not died. |
+| `events` | `id, at, kind, shark_id → sharks, text`. Kinds: `opened`, `arrived`, `born`, `fed`, `loved`, `died`, `returned`. |
+| `babies` (view) | every shark that has parents, with the parents' and family's names |
+| `alive` (view) | sharks that have not died |
 
 ```sh
-DB=~/Library/Application\ Support/LivingWallpaper/tank.sqlite
-sqlite3 -header -column "$DB" "select * from babies"
-sqlite3 -header -column "$DB" "select at, text from events order by id desc limit 20"
+sqlite3 -header -column ~/Library/Application\ Support/LivingWallpaper/tank.sqlite "select * from babies"
+sqlite3 -header -column ~/Library/Application\ Support/LivingWallpaper/tank.sqlite "select at, text from events order by id desc limit 20"
 ```
 
-To start a fresh tank, uninstall, move `tank.sqlite` somewhere else, then install again.
+To start a fresh tank, uninstall, move `tank.sqlite` away, and install again.
 
 ## How it works
 
-- `app/main.swift` is the host. It puts a borderless `WKWebView` at desktop level on every screen and every Space, behind the desktop icons. It sends the cursor position and clicks to the page, because the window itself ignores the mouse. It also writes the tank to SQLite.
-- `web/index.html` is the scene, drawn on a canvas:
-  - Each shark has a spine of 26 points; every point follows the one in front of it, and a wave runs down the tail.
-  - Each frame, the sharks are drawn into a low-resolution canvas with one pixel per grid cell. Each lit cell then becomes a monospace glyph tile, chosen by its brightness.
-  - The words are a few thousand 2-px dots on springs.
-  - There are three layers: a slow background (light and sand), the sharks, and the words. The words layer is only redrawn while dots are moving.
+```
+web/                      the scene, same on every OS
+  index.html              canvas aquarium: sharks, words, families, life and death
+  schema.sql, load.json   all the SQL (hosts only run what the page gives them)
+hosts/
+  macos/main.swift        WKWebView at desktop window level
+  windows/Program.cs      WebView2 attached behind the icons (WorkerW / Progman)
+  linux/living_wallpaper.py  WebKitGTK on the layer-shell background, or a desktop-type window
+docs/
+  HOST_PROTOCOL.md        what a host must do; write one for another platform
+  RESEARCH.md             how live wallpapers work on each OS, existing tools, problems found
+```
+
+- **Sharks.** Each shark has a spine of 26 points. Every point follows the one in front of it, and a wave runs down the tail.
+- **ASCII tiles.** Each frame, the sharks are drawn into a tiny canvas with one pixel per grid cell. Each lit cell becomes a monospace glyph tile, chosen by its brightness.
+- **The words** are a few thousand 2-px dots on springs.
+- **Hosts.** Each host is 250–400 lines and does six things: show the page behind the desktop, inject start-up data, run SQL transactions, forward the mouse where needed, watch `quote.txt`, and recover after sleep. See [docs/HOST_PROTOCOL.md](docs/HOST_PROTOCOL.md).
+- **CI.** [CI](.github/workflows/ci.yml) builds and runs all three hosts on real macOS, Linux and Windows machines on every push. Each run clicks, changes the quote, and checks the database.
 
 ## Cost
 
-On an M4 MacBook Air, it uses about 32% of one CPU core while any part of the desktop is visible. Most of that is in the WebKit GPU process. When windows cover the desktop completely, WebKit stops drawing. Use `fps=10` for less.
+On an M4 MacBook Air: about 32% of one CPU core at 15 fps while the desktop is visible. When windows cover the desktop completely, the web engine stops drawing. Use `fps=10` for less.
 
 ## Troubleshooting
 
-- **Build fails with "this SDK is not supported by the compiler".** The Command Line Tools can ship an SDK that is newer than their compiler. `install.sh` then falls back to the newest macOS 15 SDK it finds. If none is installed, update the Command Line Tools.
-- **Nothing shows.** Check `~/Library/Logs/living-wallpaper/err.log`.
-- **Preview without installing.** Run `build/LivingWallpaper --page web/index.html --db /tmp/test.sqlite --snapshot /tmp/snaps --at 3,10`. To simulate a click, add `--eval "6:__click(500,300)"`. Uninstall first: the installed wallpaper covers the test window, and WebKit stops drawing covered windows.
+| Problem | Try |
+| --- | --- |
+| Nothing shows | Read the log: macOS `~/Library/Logs/living-wallpaper/err.log`, Windows `%APPDATA%\LivingWallpaper\log.txt`, Linux `~/.local/state/living-wallpaper/log.txt`. |
+| Blank after the computer wakes | The hosts reload after sleep. If it stays blank, restart the wallpaper and open an issue with the log. |
+| macOS: "this SDK is not supported by the compiler" | The Command Line Tools shipped an SDK newer than their compiler. `install.sh` falls back to an installed macOS 15 SDK; otherwise update the Command Line Tools. |
+| Windows: black wallpaper | Edit the Startup shortcut and add `--no-layered` to its arguments (see RESEARCH.md §3). |
+| Try it without installing | Run the host with `--windowed`, for example `python3 hosts/linux/living_wallpaper.py --windowed`. |
 
 ## Credits
 
-The ASCII sharks were inspired by a shark animation posted on X by [@stackedlol](https://x.com/stackedlol/status/2113123074115830201). The words are from Franz Kafka's Zürau aphorisms. All code is original and MIT-licensed.
+The ASCII sharks were inspired by a shark animation that [@stackedlol](https://x.com/stackedlol/status/2113123074115830201) posted on X. The default words are from Franz Kafka's Zürau aphorisms. All code here is original and MIT-licensed.

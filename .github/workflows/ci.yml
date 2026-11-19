@@ -9,9 +9,9 @@ on:
 
 jobs:
   macos:
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build
         run: |
           mkdir -p build
@@ -31,7 +31,7 @@ jobs:
   linux:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y -qq python3-gi python3-gi-cairo gir1.2-webkit2-4.1 gir1.2-gtklayershell-0.1 xvfb fonts-dejavu-core
       - name: Run
@@ -52,7 +52,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-dotnet@v4
         with: { dotnet-version: "8.0.x" }
       - name: Build
@@ -68,7 +68,7 @@ jobs:
           Start-Sleep 12; "Windows sharks." | Set-Content q.txt
           $p.WaitForExit(60000) | Out-Null
           Get-Content out/log.txt
-          if (-not (Select-String -Path out/log.txt -Pattern 'errors\+frames \[\[\],[1-9]' -Quiet)) { throw "page did not animate" }
+          if (-not (Select-String -Path out/log.txt -Pattern 'errors\+frames "?\[\[\],[1-9]' -Quiet)) { throw "page did not animate" }
           python tests/check_tank.py out/tank.sqlite
       - name: Attach behind the desktop icons
         shell: pwsh
