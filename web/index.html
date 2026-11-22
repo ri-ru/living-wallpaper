@@ -122,14 +122,16 @@ function buildAtlas() {
 }
 const GI = {}; [...GLYPHS].forEach((c, i) => GI[c] = i);
 const perf = { frames: 0, js: 0, draws: 0, tiles: 0, dotsDrawn: 0 };                     // window.__perf(): average cost per frame
+let mainDirty = [];                                               // [x, y, w, h, ...] drawn on the top layer last frame
 function tile(hue, level, glyph, x, y, alpha) {
   perf.draws++;
+  if (ctx === mainCtx) mainDirty.push(Math.floor(x / S) * S, Math.floor(y / S) * S, S, S);
   ctx.globalAlpha = alpha;
   ctx.drawImage(atlas, glyph * T, (hue * LEVELS + level) * T, T, T, Math.floor(x / S) * S, Math.floor(y / S) * S, S, S);
 }
 function glyphFor(level, cell, t) {
   const set = LEVEL_GLYPHS[level], r = cellRand[cell];
-  return GI[set[(r * 97 + Math.floor(t * 0.0006 + r * 5)) % set.length | 0]];
+  return GI[set[(r * 97 + Math.floor(t * 0.00017 + r * 5)) % set.length | 0]];   // each cell's glyph changes about every 6 s
 }
 
 // ---------- the words: fine dots; big swimmers feast through them, then the letters settle back ----------
@@ -510,6 +512,11 @@ function drawSwimmer(g, a, sp) {
     const p = sp[at(s.u)], w = width(a, p.u) * L;
     g.fillStyle = `rgb(${62 * dim | 0},${55 * dim | 0},${44 * dim | 0})`; g.beginPath();
     g.arc(p.x + p.nx * w * s.s, p.y + p.ny * w * s.s, w * s.r * 0.5, 0, Math.PI * 2); g.fill();
+  }
+  if (!a.dead) {                                                   // family colour along the back: a few cells
+    const fh = HUES[famOf(a).hue] || HUES.teal;
+    g.fillStyle = `rgb(${fh[0] * (0.6 + 0.4 * a.depth) | 0},${fh[1] * (0.6 + 0.4 * a.depth) | 0},${fh[2] * (0.6 + 0.4 * a.depth) | 0})`;
+    for (let i = 3; i < n * 0.7; i += 5) { const p = sp[i]; g.fillRect(p.x - S * 0.45, p.y - S * 0.45, S * 0.9, S * 0.9); }
   }
 }
 // ---------- input: hover = adults circle; click an animal = love; click water = food ----------
@@ -917,7 +924,11 @@ function frame(now) {
     ctx = mainCtx;
   }
 
-  ctx.globalAlpha = 1; ctx.clearRect(0, 0, W, H);
+  ctx.globalAlpha = 1;
+  if (mainDirty.length) {                                          // erase last frame's small things in one draw
+    ctx.beginPath(); for (let i = 0; i < mainDirty.length; i += 4) ctx.rect(mainDirty[i] - 1, mainDirty[i + 1] - 1, mainDirty[i + 2] + 2, mainDirty[i + 3] + 2);
+    ctx.globalCompositeOperation = 'destination-out'; ctx.fill(); ctx.globalCompositeOperation = 'source-over'; mainDirty = [];
+  }
   updateTiles(fd, dd, decayMap);
   const gold = HI('gold');                                         // food: sinks; food from a body first bobs up
   food = food.filter(f => now < f.until);
@@ -938,11 +949,6 @@ function frame(now) {
       else { tile(pink, lv - 1, GI['~'], c.x - d * S, y, al); tile(pink, lv, GI[d > 0 ? '>' : '<'], c.x, y, al); }
     }
   }
-  for (const a of animals) {                                       // family colour along each living shark's back
-    if (a.dead || !isShark(a)) continue;
-    const fh = HI(famOf(a).hue || 'teal');
-    for (let i = 3; i < a.sp.length * 0.7; i += 5) { const p = a.sp[i]; tile(fh, 3, GI['%'], p.x, p.y, 0.9 * (0.5 + 0.5 * a.depth)); }
-  }
   for (const f of animals) {                                       // fish: a head that points the way, and a tail
     if (f.kind !== 'fish') continue;
     const al = f.dead ? Math.max(0, 1 - (now - f.dead.t) / 400) : 1, hue = HI(famOf(f).hue === 'pink' ? 'silver' : famOf(f).hue || 'silver');
@@ -955,6 +961,7 @@ function frame(now) {
   for (const b of bubbles) {
     b.y -= b.v * dt; const x = b.x + Math.sin(now * 0.003 + b.w) * 4;
     ctx.globalAlpha = 0.55; ctx.drawImage(bubbleAtlas, b.g * T, 0, T, T, Math.floor(x / S) * S, Math.floor(b.y / S) * S, S, S);
+    mainDirty.push(Math.floor(x / S) * S, Math.floor(b.y / S) * S, S, S);
   }
   hearts = hearts.filter(h => (h.life -= dt) > 0);
   for (const h of hearts) { h.y -= h.v * dt; tile(pink, 5, GI['♥'], h.x + Math.sin(now * 0.004 + h.w) * 6, h.y, Math.min(1, h.life)); }
@@ -963,7 +970,9 @@ function frame(now) {
   for (const a of animals) if (now < a.tagUntil) {                 // name tags of loved animals
     const p = headOf(a), looks = describe(a);
     ctx.globalAlpha = Math.min(1, (a.tagUntil - now) / 800) * 0.9; ctx.fillStyle = '#f2d9e6';
-    ctx.fillText(`${a.name} · ${SPECIES[a.kind].label} · gen ${a.gen} · ${famOf(a).name || ''} · ${fmtAge(wall() - a.born)}${looks ? ' · ' + looks : ''} ${'♥'.repeat(Math.min(a.love, 5))}`, p.x + 16, (p.y + (a.yo || 0)) - 16);
+    const label = `${a.name} · ${SPECIES[a.kind].label} · gen ${a.gen} · ${famOf(a).name || ''} · ${fmtAge(wall() - a.born)}${looks ? ' · ' + looks : ''} ${'♥'.repeat(Math.min(a.love, 5))}`;
+    const tx = p.x + 16, ty = (p.y + (a.yo || 0)) - 16;
+    ctx.fillText(label, tx, ty); mainDirty.push(tx, ty - 9, ctx.measureText(label).width + 2, 18);
   }
   ctx.globalAlpha = 1;
   paintWords();
