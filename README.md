@@ -208,3 +208,4 @@ The ASCII sharks were inspired by a shark animation that [@stackedlol](https://x
 
 ## What was done
 - 2026-11-22: top layer erases only the tiles drawn last frame; each glyph changes about every 6 s; family colour on every living swimmer's back (6ab4c6c)
+- 2026-11-23: only one whale lives in the tank and passes through alone; Yono died, Vero stays (89e0266)
