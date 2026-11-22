@@ -207,5 +207,6 @@ On an M4 MacBook Air, with 24 sharks, a fish school, crabs and shrimp: about **7
 The ASCII sharks were inspired by a shark animation that [@stackedlol](https://x.com/stackedlol/status/2113123074115830201) posted on X. The default words are from Franz Kafka's Zürau aphorisms. All code here is original and MIT-licensed.
 
 ## What was done
+- 2026-11-23: the tank is always capped at 1 whale: at startup and every minute, extra whales swim away, the biggest stays (7522c59)
 - 2026-11-23: only one whale lives in the tank and passes through alone; Yono died, Vero stays (89e0266)
 - 2026-11-22: top layer erases only the tiles drawn last frame; each glyph changes about every 6 s; family colour on every living swimmer's back (6ab4c6c)
