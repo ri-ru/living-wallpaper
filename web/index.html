@@ -777,7 +777,15 @@ function breed() {
     if (shown(kids[0])) { const h = headOf(kids[0]); for (let k = 0; k < 8; k++) hearts.push({ x: h.x + (Math.random() - .5) * 30, y: h.y, v: 20 + Math.random() * 30, w: Math.random() * 6, life: 3 }); }
   }
 }
+// The tank holds at most SPECIES.whale.cap whales (1), however they got there (old save, census, births).
+// Extra whales, the smallest first, swim away for good.
+function capWhales() {
+  const ws = ofKind('whale').sort((p, q) => q.adultLen - p.adultLen), extra = ws.slice(SPECIES.whale.cap);
+  for (const w of extra) { w.visiting = null; die(w, performance.now(), 'swam away'); }
+  if (extra.length) save(true);
+}
 function census() {                                               // one newcomer group per check, so arrivals are spread out
+  capWhales();
   const sharksAlive = ofKind('hammer').length + ofKind('leopard').length;
   for (const kind of ['fish', 'crab', 'shrimp', 'whale', 'hammer', 'leopard']) {
     if (isShark({ kind }) ? sharksAlive >= 3 : ofKind(kind).length >= SPECIES[kind].min) continue;
@@ -793,6 +801,7 @@ function bubble(x, y) { return { x, y, v: 30 + Math.random() * 45, w: Math.rando
 // ---------- start ----------
 resize();
 if (TANK && TANK.animals && TANK.animals.length) restore(TANK); else openTank();
+capWhales();
 window.__save = () => save(true);
 // The lock-screen picture: only the words, crisp, on the tank's dark background (no animals). Hosts call this
 // and save the returned PNG as the system lock-screen image.
@@ -807,6 +816,7 @@ window.__quoteImage = () => {
 };
 window.__setQuote = text => { text = String(text || '').trim(); if (text && text !== QUOTE) { QUOTE = text; drawWords(); } };
 window.__visit = () => startVisit(performance.now());              // for tests: call the whales now
+window.__capWhales = () => capWhales();                           // for tests: enforce the whale cap now
 window.__census = () => census();                                  // for tests: let the next newcomers arrive now
 addEventListener('resize', () => resize());
 let last = performance.now(), lastDraw = 0, frames = 0, nextBreed = performance.now() + 20000, nextCensus = performance.now() + 8000;
