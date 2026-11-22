@@ -36,7 +36,7 @@ const WHALE_GAP_MIN = [20, 90];            // design choice: minutes between wha
 const SPECIES = {
   hammer:  { db: 'hammerhead', label: 'hammerhead', body: 'swim',  life: [144, 192],   grow: 36,  rate: 0.08,  cool: 24,  cap: 12, min: 0,  clutch: [1, 1], pair: true,  size: [0.30, 0.42], depth: [0.55, 1.0], hunger: 7200, wave: 0.045, speed: 0.17 },
   leopard: { db: 'leopard',    label: 'leopard shark', body: 'swim', life: [144, 192], grow: 36,  rate: 0.08,  cool: 24,  cap: 12, min: 0,  clutch: [1, 1], pair: true,  size: [0.26, 0.36], depth: [0.55, 1.0], hunger: 7200, wave: 0.045, speed: 0.17 },
-  whale:   { db: 'whale',      label: 'whale',      body: 'swim',  life: [1440, 2160], grow: 168, rate: 0.004, cool: 720, cap: 3,  min: 1,  clutch: [1, 1], pair: true,  size: [1.20, 1.50], depth: [0.42, 0.48], hunger: 0, wave: 0.012, speed: 0.045, migrates: true },
+  whale:   { db: 'whale',      label: 'whale',      body: 'swim',  life: [1440, 2160], grow: 168, rate: 0.004, cool: 720, cap: 1,  min: 1,  clutch: [1, 1], pair: true,  size: [1.20, 1.50], depth: [0.42, 0.48], hunger: 0, wave: 0.012, speed: 0.045, migrates: true },
   fish:    { db: 'fish',       label: 'fish',       body: 'fish',  life: [48, 72],     grow: 8,   rate: 0.6,   cool: 12,  cap: 60, min: 12, clutch: [3, 6], pair: true,  size: [1, 1], depth: [0.9, 0.9], hunger: 5400 },
   crab:    { db: 'crab',       label: 'crab',       body: 'crawl', life: [192, 288],   grow: 24,  rate: 0.08,  cool: 48,  cap: 8,  min: 2,  clutch: [1, 3], pair: true,  size: [1, 1], depth: [1, 1], hunger: 5400 },
   shrimp:  { db: 'shrimp',     label: 'shrimp',     body: 'crawl', life: [72, 96],     grow: 8,   rate: 0.2,   cool: 24,  cap: 12, min: 3,  clutch: [2, 4], pair: true,  size: [1, 1], depth: [1, 1], hunger: 5400 },
@@ -360,7 +360,7 @@ function foundFamily(kind, fromEdge) {
     const adultLen = sp.body === 'swim' ? M * rand(sp.size) : 1;
     return makeAnimal(Object.assign({ name: newName(), kind, family: fam.id, len: adultLen, adultLen }, at(), extra));
   };
-  const counts = { hammer: [2, 1], leopard: [2, 1], whale: [2, 0], fish: [22, 0], crab: [2, 1], shrimp: [4, 0] }[kind];
+  const counts = { hammer: [2, 1], leopard: [2, 1], whale: [1, 0], fish: [22, 0], crab: [2, 1], shrimp: [4, 0] }[kind];
   const founders = Array.from({ length: counts[0] }, () => adult());
   for (let i = 0; i < counts[1]; i++) {
     const kidAdult = founders[0].adultLen * (0.9 + Math.random() * 0.2);
@@ -374,7 +374,7 @@ function foundFamily(kind, fromEdge) {
 }
 const ARRIVAL_TEXT = {
   hammer: f => `a hammerhead family swims in: the ${f}`, leopard: f => `a leopard shark family swims in: the ${f}`,
-  whale: f => `a pod of whales has found the tank: the ${f}`,
+  whale: f => `a whale has found the tank: the ${f}`,
   fish: f => `a school of fish arrives: the ${f}`,
   crab: f => `crabs walk in along the sand: the ${f}`, shrimp: f => `shrimp hop in along the sand: the ${f}`,
 };
@@ -664,20 +664,20 @@ function stepCrawler(c, dt, now) {
   }
 }
 
-// ---------- whales: away most of the time; a pod passes through now and then ----------
+// ---------- the whale: away most of the time; it passes through alone now and then ----------
 let nextVisit = performance.now() + (3 + Math.random() * 4) * 60000;
 function startVisit(now) {
-  const pod = ofKind('whale');
+  const pod = ofKind('whale').sort((p, q) => q.adultLen - p.adultLen).slice(0, 1);   // only one whale ever passes through
   if (!pod.length) return;
   const fromLeft = Math.random() < 0.5, y0 = H * (0.3 + Math.random() * 0.4), y1 = H * (0.3 + Math.random() * 0.4);
   const exit = { x: fromLeft ? W + M * 2.2 : -M * 2.2, y: y1 };
-  pod.sort((p, q) => q.len - p.len).forEach((w, i) => {
+  pod.forEach((w, i) => {
     const sx = fromLeft ? -M * 0.2 - i * w.len * 0.45 : W + M * 0.2 + i * w.len * 0.45, sy = y0 + (i % 2 ? 1 : -1) * i * M * 0.09;
     const ang = Math.atan2(exit.y - sy, exit.x - sx);
     w.a = ang; w.pts.forEach((p, k) => { p.x = sx - Math.cos(ang) * w.len * k / N; p.y = sy - Math.sin(ang) * w.len * k / N; });
     w.visiting = { exit, fromLeft, start: now }; w.speed = 0;
   });
-  event('visit', `the whales pass through: ${pod.map(w => `${w.name}${isBaby(w) ? ' (calf)' : ''}`).join(', ')}`, pod[0]);
+  event('visit', `the whale passes through: ${pod.map(w => `${w.name}${isBaby(w) ? ' (calf)' : ''}`).join(', ')}`, pod[0]);
 }
 function endVisits() {
   for (const w of ofKind('whale')) {

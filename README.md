@@ -7,7 +7,7 @@ An aquarium lives behind your desktop icons, drawn in tiny monospace tiles:
 - hammerhead and leopard sharks
 - a school of fish
 - crabs and shrimp on the sand
-- now and then, a pod of enormous whales passing through on their migration
+- now and then, one enormous whale passing through on its migration
 
 They swim through a line of text, *"Evil is whatever distracts."*, tearing up the letters, which settle back afterwards. The text is yours to change.
 
@@ -117,14 +117,14 @@ Changes to `web/` show up after a restart:
 | Animal | Lives | Grows up in | Young | Behaviour |
 | --- | --- | --- | --- | --- |
 | Hammerhead, leopard shark | 6–8 days | 36 h | 1 per pair, at most one a day | roams; circles your cursor; eats food, fish and shrimp when hungry |
-| Whale | 2–3 months | a week | very rare (a calf is born far away) | migrates: a pod passes through every 20–90 min, then is gone |
+| Whale | 2–3 months | a week | none (only one whale lives in the tank) | migrates: it passes through alone every 20–90 min, then is gone |
 | Fish | 2–3 days | 8 h | clutches of 3–6 | schools; flees sharks; curious about your cursor |
 | Crab | 8–12 days | a day | 1–3 | walks the sand picking up crumbs and remains |
 | Shrimp | 3–4 days | 8 h | 2–4 | hops along the sand |
 
 - **Every animal looks a little different.** Each one has its own build, fin or wing size, tail, speed, colour tint and pattern. Rarely, one is born **pale** or **dark**. The young inherit a blend of their parents, with small mutations. Click an animal to see its name tag, for example `Tiki · hammerhead · gen 3 · Anfis · 2d4h · pale, broad-finned ♥`.
 - **Food chain.** Hungry sharks hunt fish and shrimp ("Kiki caught Lolo the fish"). Dead sharks and whales sink and crumble into food; small animals leave a crumb. Crabs and shrimp clean up the sand. Sharks that swim through the words get a little less hungry.
-- **Newcomers.** If a species runs low, a new family of it arrives: a school swims in, crabs walk in along the sand, a whale pod finds the tank.
+- **Newcomers.** If a species runs low, a new family of it arrives: a school swims in, crabs walk in along the sand, a single whale finds the tank.
 - **Time away keeps counting.** When the computer sleeps or is off, the tank replays the missing time when the wallpaper starts again. Animals born meanwhile appear at the age they would be now. Those whose time ran out are recorded as dying quietly at that moment. The log shows these events as "while you were away: …".
 
 All of these numbers are in the `SPECIES` table at the top of `web/index.html`.
